@@ -10,12 +10,18 @@
     "ingest-plans": "node ingestPlans.js",
     "search": "node testSearch.js"
   },
-  "keywords": ["mcp", "qdrant", "memory", "rag"],
+  "keywords": [
+    "mcp",
+    "qdrant",
+    "memory",
+    "rag"
+  ],
   "license": "MIT",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@qdrant/js-client-rest": "^1.18.0",
+    "dotenv": "^17.4.2",
     "node-fetch": "^3.3.2",
     "zod": "^4.4.3"
   }
