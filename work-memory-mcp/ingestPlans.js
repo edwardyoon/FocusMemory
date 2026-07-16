@@ -3,9 +3,9 @@ import path from "path";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import fetch from "node-fetch";
 
-const QWEN_URL = process.env.QWEN_URL || "http://192.168.219.123:8080/v1/chat/completions";
-const BGE_URL = process.env.BGE_URL || "http://192.168.219.102:8080/v1/embeddings";
-const QDRANT_URL = process.env.QDRANT_URL || "http://192.168.219.102:6333";
+const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completions";
+const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
+const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 // plans/ directory is relative to the parent of work-memory-mcp/
 const PLANS_DIR_ROOT = process.env.PLANS_DIR || path.join(process.cwd(), "..", "plans");
 

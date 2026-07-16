@@ -104,21 +104,21 @@ def extract_features(query: str) -> dict:
 
 For each backend $b \in \{\text{lexical}, \text{vector}, \text{history}\}$:
 
-$$
-\text{score}(b, q) = w_1 \cdot \text{sim}_b(q) + w_2 \cdot \text{specificity}(q, b) + w_3 \cdot \text{recency\_prior}(b)
-$$
+```
+score(b, q) = w1 · sim_b(q) + w2 · specificity(q, b) + w3 · recency_prior(b)
+```
 
 where:
 
-- $\text{sim}_b(q)$ — the backend's own top-1 confidence. Normalized BM25 score for lexical, top-1 cosine similarity from Qdrant for vector.
-- $\text{specificity}(q, b)$ — fit between extracted query features and the backend (high `identifier_ratio` favors lexical; `is_causal` favors history).
-- $\text{recency\_prior}(b)$ — light session-local momentum toward a backend that answered well recently. Can be initialized to 0 for v0.
+- `sim_b(q)` — the backend's own top-1 confidence. Normalized BM25 score for lexical, top-1 cosine similarity from Qdrant for vector.
+- `specificity(q, b)` — fit between extracted query features and the backend (high `identifier_ratio` favors lexical; `is_causal` favors history).
+- `recency_prior(b)` — light session-local momentum toward a backend that answered well recently. Can be initialized to 0 for v0.
 
 Route to:
 
-$$
-b^* = \arg\max_{b} \; \text{score}(b, q)
-$$
+```
+b* = argmax_b score(b, q)
+```
 
 ### 1.3 MVP simplification
 
@@ -137,15 +137,15 @@ def route(query, features):
 
 When two backends' scores fall within a threshold of each other:
 
-$$
-|\text{score}(b_1, q) - \text{score}(b_2, q)| < \epsilon \;\Rightarrow\; \text{fetch top-}k \text{ from both, rerank}
-$$
+```
+|score(b1, q) - score(b2, q)| < ε  ⇒  fetch top-k from both, rerank
+```
 
 For v0, skip a cross-encoder reranker — recompute query–chunk cosine similarity plus a recency weight and combine:
 
-$$
-\text{rerank\_score}(r) = \alpha \cdot \cos(\text{embed}(q), \text{embed}(r)) + (1-\alpha) \cdot \text{recency}(r)
-$$
+```
+rerank_score(r) = α · cos(embed(q), embed(r)) + (1 - α) · recency(r)
+```
 
 <br>
 
@@ -157,15 +157,15 @@ Three levers: **deduplication**, **budget-constrained selection (knapsack)**, an
 
 ### 2.1 Deduplication against already-injected context
 
-Maintain the embedding set $S$ of chunks already injected this session:
+Maintain the embedding set `S` of chunks already injected this session:
 
-$$
-\text{sim\_max}(r_i) = \max_{s \in S} \cos\big(\text{embed}(r_i), \text{embed}(s)\big)
-$$
+```
+sim_max(r_i) = max_{s ∈ S} cos(embed(r_i), embed(s))
+```
 
-$$
-\text{keep}(r_i) = \text{sim\_max}(r_i) < \tau \quad (\tau \approx 0.92)
-$$
+```
+keep(r_i) = sim_max(r_i) < τ    (τ ≈ 0.92)
+```
 
 This filters out semantically redundant information, not just exact string duplicates — stronger than hash-based dedup.
 
@@ -182,17 +182,17 @@ def dedupe(candidates, injected_set, tau=0.92):
 
 ### 2.2 Budget-constrained selection — knapsack approximation
 
-Given a total context budget $B$ (tokens), candidate $i$ with relevance $rel_i$ and token cost $tok_i$:
+Given a total context budget `B` (tokens), candidate `i` with relevance `rel_i` and token cost `tok_i`:
 
-$$
-\max \sum_i rel_i \cdot x_i \quad \text{subject to} \quad \sum_i tok_i \cdot x_i \le B,\ x_i \in \{0, 1\}
-$$
+```
+max Σ rel_i · x_i    subject to    Σ tok_i · x_i ≤ B,  x_i ∈ {0, 1}
+```
 
 Exact knapsack is unnecessary here — a greedy pass on value density is a good enough approximation:
 
-$$
-\text{density}_i = \frac{rel_i}{tok_i}
-$$
+```
+density_i = rel_i / tok_i
+```
 
 ```python
 def select_within_budget(candidates, budget):
@@ -209,17 +209,17 @@ def select_within_budget(candidates, budget):
 
 Bucket query embeddings (e.g. via LSH) so a near-duplicate query within the same session skips a fresh Qdrant call:
 
-$$
-\text{cache\_hit}(q) = \exists\, q' \in \text{session\_cache} : \cos\big(\text{embed}(q), \text{embed}(q')\big) > 0.95
-$$
+```
+cache_hit(q) = ∃ q' ∈ session_cache : cos(embed(q), embed(q')) > 0.95
+```
 
 ### 2.4 Coupling with inference-engine caching (llama.cpp)
 
 If the injected context is placed as a fixed prefix at the start of each turn's prompt, the KV cache can be reused across turns as long as the prefix hasn't changed:
 
-$$
-\text{reuse\_kv} = \Big(\text{hash}(\text{injected\_context}_t) = \text{hash}(\text{injected\_context}_{t-1})\Big)
-$$
+```
+reuse_kv = (hash(injected_context_t) = hash(injected_context_{t-1}))
+```
 
 This maps directly onto `llama.cpp`'s `--cache-prompt` flag — the effect should be directly measurable on local inference setups.
 
