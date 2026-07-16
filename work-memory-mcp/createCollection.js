@@ -1,3 +1,4 @@
+import "dotenv/config";
 import { QdrantClient } from "@qdrant/js-client-rest";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import fs from "fs/promises";
 import path from "path";
 import { QdrantClient } from "@qdrant/js-client-rest";
