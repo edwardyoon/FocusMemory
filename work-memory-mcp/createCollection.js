@@ -1,6 +1,6 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 
-const QDRANT_URL = process.env.QDRANT_URL || "http://192.168.219.102:6333";
+const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const VECTOR_SIZE = 1024; // bge-m3 embedding dimension — change here if your server differs
 
 const qdrant = new QdrantClient({ url: QDRANT_URL });
@@ -51,7 +51,7 @@ async function main() {
     await createCollectionIfNotExists("work_memory");
     await createCollectionIfNotExists("project_facts");
     await createPayloadIndexes();
-    console.log("\nDone. Check at http://192.168.219.120:6333/dashboard");
+    console.log("\nDone. Check at http://127.0.0.1:6333/dashboard");
   } catch (err) {
     console.error("Error:", err.message);
     if (err.data) console.error(JSON.stringify(err.data, null, 2));

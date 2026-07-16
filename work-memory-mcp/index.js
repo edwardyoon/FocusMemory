@@ -4,8 +4,8 @@ import { QdrantClient } from "@qdrant/js-client-rest";
 import { z } from "zod";
 import fetch from "node-fetch";
 
-const QDRANT_URL = process.env.QDRANT_URL || "http://192.168.219.102:6333";
-const BGE_URL = process.env.BGE_URL || "http://192.168.219.102:8080/v1/embeddings";
+const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
+const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 
 const qdrant = new QdrantClient({ url: QDRANT_URL });
 
