@@ -1,155 +1,35 @@
 import "dotenv/config";
 import fs from "fs/promises";
 import path from "path";
-import { QdrantClient } from "@qdrant/js-client-rest";
-import fetch from "node-fetch";
+import { qdrant, embed, chunkDocument, deletePointsByDoc, PLANS_SYSTEM_PROMPT } from "./utils.js";
 
-const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completions";
-const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
-const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 // plans/ directory is relative to the parent of work-memory-mcp/
 const PLANS_DIR_ROOT = process.env.PLANS_DIR || path.join(process.cwd(), "..", "plans");
-
-const qdrant = new QdrantClient({ url: QDRANT_URL });
 
 // If a single filename is passed as an argument, process only that file; otherwise scan all of plans/
 const singleFileArg = process.argv[2];
 
-const SYSTEM_PROMPT = `You are an expert at converting work plan/history documents into knowledge chunks for the work_memory MCP server.
-
-The markdown document below records work plans, decisions, and completed issues from a past session.
-Read the document and split it into independently searchable fact-level chunks, output as a JSON array only.
-
-Rules:
-1. Each chunk must be a self-contained sentence. Context-dependent phrases like "this value" or "in the table above" are forbidden — always state explicitly what is being referred to.
-2. Each chunk contains exactly one fact or concept.
-3. Never omit or summarize concrete details such as file paths, code locations (line numbers), or function names — preserve them verbatim.
-4. Keep bug fix details, applied patches, and verification methods as a single chunk, but split into logical units if too long.
-5. Each chunk should be no more than 3–6 sentences.
-6. Exclude small talk and background explanation.
-
-Output format (JSON only, absolutely no other text):
-[{"content": "...", "section_title": "..."}]`;
-
-async function embed(text) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
-
-  try {
-    const res = await fetch(BGE_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: "bge-m3", input: text }),
-      signal: controller.signal,
-    });
-
-    if (res.status !== 200) {
-      console.error(`    [embed error] HTTP ${res.status}`);
-      return null;
-    }
-
-    const data = await res.json();
-    if (data.data && Array.isArray(data.data) && data.data[0]) {
-      return data.data[0].embedding;
-    }
-    if (data.embedding) {
-      return data.embedding;
-    }
-    console.error("    [embed error] unknown response format");
-    return null;
-  } catch (err) {
-    if (err.name === "AbortError") {
-      console.error("    [embed timeout] exceeded 30s");
-    } else {
-      console.error(`    [embed error] ${err.message}`);
-    }
-    return null;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-async function chunkDocument(docText, maxRetries = 2) {
-  const body = JSON.stringify({
-    model: "qwen3.6-27b",
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: docText },
-    ],
-    temperature: 0.1,
-    max_tokens: 14096,
-  });
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 600000); // max 10 min for LLM processing
-
-    try {
-      console.log(`  [LLM request] attempt ${attempt}/${maxRetries}`);
-
-      const res = await fetch(QWEN_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
-        signal: controller.signal,
-      });
-
-      if (res.status !== 200) {
-        console.error(`  [LLM error] HTTP ${res.status}`);
-        return [];
-      }
-
-      const data = await res.json();
-      if (!data.choices || !data.choices[0] || !data.choices[0].message) {
-        console.error("  [response structure error]");
-        return [];
-      }
-
-      let raw = data.choices[0].message.content.trim();
-      raw = raw.replace(/^```json\s*/i, "").replace(/```\s*$/i, "");
-
-      const parsed = JSON.parse(raw);
-      console.log(`  [JSON parsed OK] ${parsed.length} chunks`);
-      return parsed;
-    } catch (e) {
-      if (e.name === "AbortError") {
-        console.error(`  [LLM timeout] attempt ${attempt}, exceeded 600s (10 min)`);
-      } else if (e.name === "SyntaxError") {
-        console.error("  [JSON parse failed]", e.message);
-        return [];
-      } else {
-        console.error(`  [network error] attempt ${attempt}: ${e.message}`);
-      }
-
-      if (attempt < maxRetries) {
-        console.log(`  → retrying in ${attempt === 1 ? "30s" : "60s"}...`);
-        await new Promise((r) => setTimeout(r, attempt === 1 ? 30000 : 60000));
-      }
-    } finally {
-      clearTimeout(timeout);
+function extractFilePaths(text) {
+  const patterns = [
+    /[`']([^`\']*\.js)[`']/g,
+    /[`']([^`\']*\.php)[`']/g,
+    /[`']([^`\']*\.css)[`']/g,
+    /[`']([^`\']*\.html)[`']/g,
+  ];
+  const files = new Set();
+  for (const pattern of patterns) {
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      files.add(match[1]);
     }
   }
-
-  console.error("  → all retries failed");
-  return [];
-}
-
-async function deletePointsByDoc(collection, fileName) {
-  await qdrant.delete(collection, {
-    filter: {
-      must: [{ key: "source_doc", match: { value: fileName } }],
-    },
-  });
+  return [...files];
 }
 
 // Infer project name and type from filename/path
 function inferMetadata(filePath, isDone) {
   const fileName = path.basename(filePath);
-
-  // Files under plans/done/ are completed tasks → status: resolved
   const status = isDone ? "resolved" : "open";
-
-  // Extract related files from the path (listed filenames only)
   return { status, source_doc: `${isDone ? 'done/' : ''}${fileName}` };
 }
 
@@ -165,7 +45,7 @@ async function ingestPlan(filePath) {
   await deletePointsByDoc("work_memory", metadata.source_doc);
   console.log(`  → deleted existing points for '${metadata.source_doc}'`);
 
-  const chunks = await chunkDocument(docText);
+  const chunks = await chunkDocument(docText, PLANS_SYSTEM_PROMPT);
   if (chunks.length === 0) {
     console.log("  → failed to extract chunks, skipped\n");
     return;
@@ -206,24 +86,6 @@ async function ingestPlan(filePath) {
   } else {
     console.log("  → no points to save, skipped\n");
   }
-}
-
-// Extract file path patterns from document text
-function extractFilePaths(text) {
-  const patterns = [
-    /[`']([^`\']*\.js)[`']/g,
-    /[`']([^`\']*\.php)[`']/g,
-    /[`']([^`\']*\.css)[`']/g,
-    /[`']([^`\']*\.html)[`']/g,
-  ];
-  const files = new Set();
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      files.add(match[1]);
-    }
-  }
-  return [...files];
 }
 
 async function main() {

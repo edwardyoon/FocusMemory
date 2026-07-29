@@ -8,6 +8,8 @@
     "create-collections": "node createCollection.js",
     "ingest-docs": "node ingestDocs.js",
     "ingest-plans": "node ingestPlans.js",
+    "auto-ingest": "node autoIngest.js",
+    "auto-ingest:force": "node autoIngest.js --force",
     "search": "node testSearch.js"
   },
   "keywords": [
