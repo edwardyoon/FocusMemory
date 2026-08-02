@@ -24,6 +24,39 @@ async function createCollectionIfNotExists(name) {
   console.log(`[created] collection "${name}" created`);
 }
 
+async function createGraphCollections() {
+  // graph_nodes: function/method definitions — keyword search by name, file, kind
+  const collections = (await qdrant.getCollections()).collections;
+  if (!collections.some((c) => c.name === "graph_nodes")) {
+    await qdrant.createCollection("graph_nodes", {
+      vectors: { size: 1, distance: "Cosine" }, // dummy vector; search is payload-only
+    });
+    console.log("[created] collection \"graph_nodes\" created");
+  } else {
+    console.log('[skip] collection "graph_nodes" already exists');
+  }
+
+  await qdrant.createPayloadIndex("graph_nodes", { field_name: "name", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("graph_nodes", { field_name: "file", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("graph_nodes", { field_name: "kind", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("graph_nodes", { field_name: "lang", field_schema: "keyword" });
+  console.log("[indexed] graph_nodes: payload indexes for name, file, kind, lang");
+
+  // graph_edges: call relationships — keyword search by target_name, source_file
+  if (!collections.some((c) => c.name === "graph_edges")) {
+    await qdrant.createCollection("graph_edges", {
+      vectors: { size: 1, distance: "Cosine" }, // dummy vector; search is payload-only
+    });
+    console.log("[created] collection \"graph_edges\" created");
+  } else {
+    console.log('[skip] collection "graph_edges" already exists');
+  }
+
+  await qdrant.createPayloadIndex("graph_edges", { field_name: "target_name", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("graph_edges", { field_name: "source_file", field_schema: "keyword" });
+  console.log("[indexed] graph_edges: payload indexes for target_name, source_file");
+}
+
 async function createPayloadIndexes() {
   // work_memory: frequently filtered by project and status — indexes recommended for performance
   await qdrant.createPayloadIndex("work_memory", {
@@ -52,6 +85,7 @@ async function main() {
     await createCollectionIfNotExists("work_memory");
     await createCollectionIfNotExists("project_facts");
     await createPayloadIndexes();
+    await createGraphCollections();
     console.log("\nDone. Check at http://127.0.0.1:6333/dashboard");
   } catch (err) {
     console.error("Error:", err.message);

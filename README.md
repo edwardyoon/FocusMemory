@@ -62,16 +62,16 @@ This project is being built in the open, one honest layer at a time. Here's exac
 
 | Layer | Status | Backing |
 |---|---|---|
-| **Work history** | 🟢 running | `work-memory-mcp/` — MCP server exposing facts + session history via 3 tools |
+| **Work history** | 🟢 running | `work-memory-mcp/` — MCP server exposing facts + session history via 4 tools |
 | **Knowledge base** | 🟢 running | Qdrant — vector index over docs and plans, ingested by CLI scripts |
 | **Client adapters** | 🟢 running | Kilo Code (MCP), Qwen Code (MCP) |
-| Graph index (structural queries) | ⚪ planned | tree-sitter based symbol/call graph |
+| Graph index (structural queries) | 🟢 running | `buildGraph.js` — tree-sitter JS + regex PHP → function nodes + call edges in Qdrant |
 | Schema snapshot + drift detector | ⚪ planned | DB introspection, diffed against code assumptions |
 | Decision log auto-extraction | ⚪ planned | Session-end summarization, written back with provenance |
-| Query router | ⚪ planned | Dispatch by query type — graph / vector / snapshot |
+| Query router (scoring) | 🟢 running | `search_memory` tool — §1.2 scoring function over 3 backends + parallel rerank |
 | Freshness metadata | ⚪ planned | `last_verified_at` on every returned fact |
 
-v0 is deliberately narrow: **an MCP server exposing facts and work history, backed by Qdrant, wired into Kilo Code and Qwen Code.** Everything in the philosophy above — routing precision, drift detection, decision logs — is the direction, not a claim about what's shipped.
+v0 is deliberately narrow: **an MCP server exposing facts and work history, backed by Qdrant, wired into Kilo Code and Qwen Code.** The `search_memory` tool uses a scoring function (§1.2) to route each query across three backends — `work_memory` (decisions), `project_facts` (docs/knowledge), and `graph` (code structure) — falling back to parallel search + reranking when scores are ambiguous. The standalone `query_graph` tool provides direct graph queries for "who calls X?" style questions. Everything in the philosophy above — drift detection, decision logs — is the direction, not a claim about what's shipped.
 
 <br>
 
@@ -120,17 +120,11 @@ Route to:
 b* = argmax_b score(b, q)
 ```
 
-### 1.3 MVP simplification
+### 1.3 Implementation status
 
-The full scoring function is overkill for v0. A simpler decision tree gets most of the value:
+The scoring function (§1.2) is implemented in `utils.js` as `routeQuery()`. It scores all three backends — `work_memory`, `project_facts`, and `graph` — using feature-based specificity (no pre-search similarity yet, so `sim_b(q)` defaults to 0). Backends are normalized to sum to 1, and if the top two scores fall within ε=0.15, a parallel search + rerank is triggered (§1.4).
 
-```python
-def route(query, features):
-    if features["identifier_ratio"] > 0.3:
-        return ["lexical_or_qdrant_exact"]  # exact symbol names → exact match first
-    if features["is_causal"] or features["is_temporal"]:
-        return ["work_history_mcp"]         # "why", "when" → decision log first
-    return ["qdrant_vector"]                # default: semantic
+The graph backend uses keyword-only payload filters (no embedding), while work_memory and project_facts use bge-m3 vector search. The `searchGraph()` helper in `index.js` extracts function names and file paths from the query to build targeted Qdrant scroll queries against `graph_nodes` and `graph_edges`.
 ```
 
 ### 1.4 Ambiguous cases — parallel retrieval + rerank
@@ -258,11 +252,12 @@ FocusMemory treats those as first-class problems, not edge cases. Read-only retr
 FocusMemory/
 ├── README.md
 └── work-memory-mcp/          # MCP server (v0 core)
-    ├── index.js              # MCP server — 3 tools: search_work_memory, search_project_facts, remember_decision
+    ├── index.js              # MCP server — 4 tools: search_memory, query_graph, + legacy tools
     ├── createCollection.js   # Initialize Qdrant collections & payload indexes
+    ├── buildGraph.js         # tree-sitter JS + regex PHP → function nodes + call edges
     ├── ingestDocs.js         # Chunk + embed docs/*.md → project_facts collection
     ├── ingestPlans.js        # Chunk + embed plans/*.md → work_memory collection
-    ├── testSearch.js         # Ad-hoc search utility
+    ├── testSearch.js         # Ad-hoc search utility (with query router)
     └── package.json
 ```
 
@@ -276,7 +271,7 @@ npm install
 QDRANT_URL=http://localhost:6333 npm run create-collections
 ```
 
-This creates two collections — `work_memory` (session history, decisions) and `project_facts` (docs, schema knowledge) — with payload indexes for filtered search.
+This creates four collections — `work_memory`, `project_facts`, `graph_nodes`, `graph_edges` — with payload indexes for filtered search.
 
 ### 2. Ingest your project docs
 
@@ -299,12 +294,26 @@ QDRANT_URL=http://localhost:6333 BGE_URL=http://localhost:8080/v1/embeddings \
   npm start
 ```
 
-Configure your client (Kilo Code, Qwen Code) to connect via stdio transport and you get three tools:
+Configure your client (Kilo Code, Qwen Code) to connect via stdio transport and you get four tools:
+
+### 4. Build the code graph
+
+```bash
+# Index all JS/PHP files under a directory → graph_nodes + graph_edges
+QDRANT_URL=http://localhost:6333 npm run build-graph /path/to/project
+
+# Or use default root (/opt/homebrew/var/www)
+npm run build-graph
+```
+
+This scans for `.js` and `.php` files, extracts function definitions and intra-file call relationships using tree-sitter (JS) or regex fallback (PHP), and stores them as keyword-indexed points in Qdrant. The `query_graph` MCP tool queries these indexes.
 
 | Tool | Purpose |
 |---|---|
-| `search_work_memory` | Past decisions, resolved issues, open todos |
-| `search_project_facts` | DB schemas, infra topology, API specs |
+| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph + parallel rerank |
+| `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
+| `search_project_facts` | DB schemas, infra topology, API specs (direct) |
+| `query_graph` | Code graph: "who calls X?", "functions in file Y", dependencies |
 | `remember_decision` | Write a new decision/fact into work_memory |
 
 <br>
