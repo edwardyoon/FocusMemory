@@ -534,5 +534,51 @@ server.registerTool(
   }
 );
 
+// --- Tool 5: web search via local search server ---
+server.registerTool(
+  "search_web",
+  {
+    title: "Search Web",
+    description:
+      "Search the web using a local search server. Returns results from multiple engines (Wikipedia, Google CSE, etc.). Use for general knowledge questions or when project memory has no matching records.",
+    inputSchema: {
+      query: z.string().describe("Search query"),
+      limit: z.number().optional().default(5),
+    },
+  },
+  async ({ query, limit }) => {
+    const url = new URL("http://localhost:18080/search");
+    url.searchParams.set("q", query);
+    url.searchParams.set("format", "json");
+
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(10000) });
+      if (!res.ok) {
+        return { content: [{ type: "text", text: `Search server returned HTTP ${res.status}` }] };
+      }
+
+      const data = await res.json();
+      const results = (data.results || []).slice(0, limit);
+
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: `No web results for "${query}"` }] };
+      }
+
+      const formatted = results.map((r, i) => {
+        let line = `#${i + 1} ${r.title}\n  url: ${r.url}`;
+        if (r.engine) line += `\n  engine: ${Array.isArray(r.engine) ? r.engine.join(", ") : r.engine}`;
+        if (r.score != null) line += ` (score: ${r.score})`;
+        if (r.content) line += `\n  content: ${r.content.substring(0, 200)}`;
+        return line;
+      });
+
+      const text = `Web search results for "${data.query}" (${results.length} results):\n\n${formatted.join("\n\n")}`;
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `Search request failed: ${err.message}` }] };
+    }
+  }
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
