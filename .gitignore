@@ -3,3 +3,4 @@ package-lock.json
 .env
 dist/
 *.plist
+update.sh
