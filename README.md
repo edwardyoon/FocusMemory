@@ -62,16 +62,17 @@ This project is being built in the open, one honest layer at a time. Here's exac
 
 | Layer | Status | Backing |
 |---|---|---|
-| **Work history** | 🟢 running | `work-memory-mcp/` — MCP server exposing facts + session history via 4 tools |
+| **Work history** | 🟢 running | `work-memory-mcp/` — MCP server exposing facts, decisions, graph, web search via 6 tools |
 | **Knowledge base** | 🟢 running | Qdrant — vector index over docs and plans, ingested by CLI scripts |
 | **Client adapters** | 🟢 running | Kilo Code (MCP), Qwen Code (MCP) |
 | Graph index (structural queries) | 🟢 running | `buildGraph.js` — tree-sitter JS + regex PHP → function nodes + call edges in Qdrant |
 | Schema snapshot + drift detector | ⚪ planned | DB introspection, diffed against code assumptions |
 | Decision log auto-extraction | ⚪ planned | Session-end summarization, written back with provenance |
 | Query router (scoring) | 🟢 running | `search_memory` tool — §1.2 scoring function over 3 backends + parallel rerank |
+| Prune & Summarize | 🟢 running | `pruneAndSummarize()` in `utils.js` — BONSAI lightweight LLM compresses raw results (§2.5) |
 | Freshness metadata | ⚪ planned | `last_verified_at` on every returned fact |
 
-v0 is deliberately narrow: **an MCP server exposing facts and work history, backed by Qdrant, wired into Kilo Code and Qwen Code.** The `search_memory` tool uses a scoring function (§1.2) to route each query across three backends — `work_memory` (decisions), `project_facts` (docs/knowledge), and `graph` (code structure) — falling back to parallel search + reranking when scores are ambiguous. The standalone `query_graph` tool provides direct graph queries for "who calls X?" style questions. Everything in the philosophy above — drift detection, decision logs — is the direction, not a claim about what's shipped.
+v0 is deliberately narrow: **an MCP server exposing facts and work history, backed by Qdrant, wired into Kilo Code and Qwen Code.** The `search_memory` tool uses a scoring function (§1.2) to route each query across three backends — `work_memory` (decisions), `project_facts` (docs/knowledge), and `graph` (code structure) — falling back to parallel search + reranking when scores are ambiguous. After retrieval, raw results pass through **prune & summarize** (§2.5): a lightweight local LLM compresses the expanded result set into core facts before injection. The standalone `query_graph` tool provides direct graph queries for "who calls X?" style questions. Everything in the philosophy above — drift detection, decision logs — is the direction, not a claim about what's shipped.
 
 <br>
 
@@ -217,6 +218,26 @@ reuse_kv = (hash(injected_context_t) = hash(injected_context_{t-1}))
 
 This maps directly onto `llama.cpp`'s `--cache-prompt` flag — the effect should be directly measurable on local inference setups.
 
+### 2.5 Prune & Summarize — self-editing via lightweight local LLM
+
+The bottleneck of raw vector search is not recall, but **noise**. Top-N results may contain 80% irrelevant fragments that inflate context windows and confuse downstream models. §2.5 adds a pruning step between retrieval and injection:
+
+```
+[User Query]
+     ↓
+1. Qdrant vector + graph search (expanded top N~15 per collection)
+     ↓
+2. BONSAI lightweight LLM: "Extract only facts directly answering the query"
+     ↓
+3. Pruned, compressed context → injected into main model prompt
+```
+
+**Why this works:** A small local model (Qwen 2.5 7B/14B via vLLM) is fast enough to run inline and smart enough to filter noise. The result is a tighter context window with higher signal-to-noise ratio for the downstream LLM (Claude, GPT-4o).
+
+**Implementation:** `pruneAndSummarize()` in `utils.js` sends raw Qdrant results to `BONSAI_URL`. It extracts core facts relevant to the query, merges duplicates, and strips irrelevant fragments. If the BONSAI endpoint is unavailable or times out (30s), it gracefully falls back to returning raw formatted results — no hard dependency.
+
+**Configuration:** Set `BONSAI_URL` in `.env` (e.g. `http://192.168.219.102:8081/v1/chat/completions`). Model name is configurable via `BONSAI_MODEL` (default: `qwen2.5-7b`).
+
 <br>
 
 ---
@@ -226,6 +247,7 @@ This maps directly onto `llama.cpp`'s `--cache-prompt` flag — the effect shoul
 | Mechanism | Pipeline |
 |---|---|
 | Routing precision | query → feature extraction → per-backend score → argmax (or parallel + rerank if ambiguous) |
+| Prune & Summarize | expanded raw results → BONSAI LLM extracts core facts → compressed context injected |
 | Re-injection minimization | candidates → embedding-based dedup → budget-constrained greedy selection → session query cache → fixed-prefix KV reuse |
 
 **Suggested build order for v0:** implement §2.1 (dedup) and §2.2 (budget selection) first — highest ROI, lowest complexity. §2.3 (session cache) and §2.4 (KV coupling) are reasonable v0.2 additions once the base loop is proven.
@@ -252,7 +274,7 @@ FocusMemory treats those as first-class problems, not edge cases. Read-only retr
 FocusMemory/
 ├── README.md
 └── work-memory-mcp/          # MCP server (v0 core)
-    ├── index.js              # MCP server — 4 tools: search_memory, query_graph, + legacy tools
+    ├── index.js              # MCP server — 6 tools: search_memory (with prune & summarize), query_graph, search_web, etc.
     ├── createCollection.js   # Initialize Qdrant collections & payload indexes
     ├── buildGraph.js         # tree-sitter JS + regex PHP → function nodes + call edges
     ├── ingestDocs.js         # Chunk + embed docs/*.md → project_facts collection
@@ -291,10 +313,12 @@ npm run ingest-plans
 
 ```bash
 QDRANT_URL=http://localhost:6333 BGE_URL=http://localhost:8080/v1/embeddings \
-  npm start
+  BONSAI_URL=http://localhost:8081/v1/chat/completions npm start
 ```
 
-Configure your client (Kilo Code, Qwen Code) to connect via stdio transport and you get four tools:
+`BONSAI_URL` points to a lightweight local LLM (Qwen 2.5, Gemma etc.) used by `search_memory` for pruning and summarizing raw search results (§2.5). If omitted or unreachable, the server falls back gracefully to returning unpruned results.
+
+Configure your client (Kilo Code, Qwen Code) to connect via stdio transport and you get six tools:
 
 ### 4. Build the code graph
 
@@ -310,11 +334,12 @@ This scans for `.js` and `.php` files, extracts function definitions and intra-f
 
 | Tool | Purpose |
 |---|---|
-| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph + parallel rerank |
+| `search_memory` | **Unified** — scoring-based routing + parallel rerank + BONSAI prune & summarize (§2.5) |
 | `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
 | `search_project_facts` | DB schemas, infra topology, API specs (direct) |
 | `query_graph` | Code graph: "who calls X?", "functions in file Y", dependencies |
 | `remember_decision` | Write a new decision/fact into work_memory |
+| `search_web` | Web search via local search server (localhost:18080) |
 
 <br>
 
