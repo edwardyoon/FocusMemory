@@ -4,6 +4,8 @@ import fetch from "node-fetch";
 const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completions";
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
+const BONSAI_URL = process.env.BONSAI_URL || "http://127.0.0.1:8081/v1/chat/completions";
+const BONSAI_MODEL = process.env.BONSAI_MODEL || "qwen2.5-7b";
 
 export const qdrant = new QdrantClient({ url: QDRANT_URL });
 
@@ -152,6 +154,101 @@ export async function deletePointsByDoc(collection, sourceDoc) {
       must: [{ key: "source_doc", match: { value: sourceDoc } }],
     },
   });
+}
+
+// ─── §2.5 Prune & Summarize — self-editing via lightweight local LLM ──
+
+/**
+ * Format a single raw Qdrant result into a compact text representation
+ * suitable for the pruning prompt (collection-agnostic).
+ */
+function formatRawResult(r, collection) {
+  const p = r.payload;
+  if (collection === "work_memory") {
+    return `[${p.type}] ${p.summary_text}\n  detail: ${p.detail || ""}\n  files: ${(p.related_files || []).join(", ")}`;
+  } else if (collection === "project_facts") {
+    return `[${p.source_doc || "doc"}] ${p.content}`;
+  } else if (collection === "graph" || collection === "graph_nodes" || collection === "graph_edges") {
+    const kind = p.kind || "graph";
+    if (kind === "graph_node") {
+      return `\`${p.name}\` at ${p.file}:${p.line} (${p.lang})`;
+    } else if (kind === "graph_edge") {
+      return `${p.source_file}:${p.caller_line}: \`${p.caller_name || "?"}\` → \`${p.target_name}\``;
+    }
+    return `graph: ${JSON.stringify(p)}`;
+  }
+  return JSON.stringify(p);
+}
+
+/**
+ * Search result fragments를 Query 관점에서 필요한 내용만 추출/압축 (Self-Editing).
+ *
+ * Raw Qdrant 결과(top N~15개)를 BONSAI 경량 LLM에 전달하여:
+ * - 질문과 직접 관련된 핵심 팩트만 남기고 요약
+ * - 무관하거나 중복된内容是 완전히 제거(Prune)
+ * - 실패 시 원본 raw 포맷으로 graceful fallback
+ */
+export async function pruneAndSummarize(query, results) {
+  if (!results || results.length === 0) return null;
+
+  const formatted = results.map((r, i) => {
+    const col = r._collection || "unknown";
+    return `[${i + 1}] (${col})\n${formatRawResult(r, col)}`;
+  }).join("\n\n");
+
+  const prompt = `너는 검색 컨텍스트 편집자다.
+[사용자 질문]에 답하는 데 **직접적으로 필요한 핵심 팩트**만 검색 결과에서 추출하여 압축 요약하라.
+질문과 관련 없거나 중복되는 내용은 완전히 제거(Prune)해라.
+
+[사용자 질문]: ${query}
+
+[검색된 결과 파편들]:
+${formatted}
+
+[출력 규칙]:
+- 핵심 팩트 위주의 요약된 텍스트만 출력할 것.
+- 불필요한 서론/인사말 금지.
+- 원본의 파일 경로, 함수명, 컬럼명 등 구체적 사실은 절대 누락하지 말 것.
+- 여러 소스가 같은 사실을 언급하면 하나로 병합할 것.`;
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    const res = await fetch(BONSAI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: BONSAI_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 2048,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (res.status !== 200) {
+      console.error(`[pruneAndSummarize] BONSAI HTTP ${res.status}, falling back`);
+      return null;
+    }
+
+    const data = await res.json();
+    if (!data.choices || !data.choices[0]?.message?.content) {
+      console.error("[pruneAndSummarize] unexpected response structure, falling back");
+      return null;
+    }
+
+    return data.choices[0].message.content.trim();
+  } catch (err) {
+    if (err.name === "AbortError") {
+      console.error("[pruneAndSummarize] timeout (30s), falling back to raw");
+    } else {
+      console.error(`[pruneAndSummarize] error: ${err.message}, falling back to raw`);
+    }
+    return null;
+  }
 }
 
 // ─── Query Router (README §1: scoring function + decision fallback) ──

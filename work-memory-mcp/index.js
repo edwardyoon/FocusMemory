@@ -4,7 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { z } from "zod";
 import fetch from "node-fetch";
-import { extractQueryFeatures, routeQuery } from "./utils.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
@@ -104,7 +104,8 @@ server.registerTool(
     let allResults = [];
 
     if (vectorTargets.length > 0) {
-      const perCollectionLimit = Math.max(limit, 3);
+      // Fetch more raw results for pruning — the LLM will compress them down
+      const perCollectionLimit = Math.max(limit * 2, 10);
 
       // Embed once, reuse for all vector backends
       const vector = await embed(query);
@@ -124,16 +125,15 @@ server.registerTool(
 
     // Graph backend: keyword-only scroll (§1.4 — no embedding needed)
     if (graphTarget) {
-      const graphResults = await searchGraph(query, limit);
+      const graphLimit = Math.max(limit * 2, 10);
+      const graphResults = await searchGraph(query, graphLimit);
       allResults.push(...graphResults);
     }
 
     // If multiple backends contributed results, rerank (§1.4)
+    // Note: we do NOT slice here — keep expanded raw set for pruning (§2.5)
     if (allResults.length > 0 && route.mode === "parallel") {
-      allResults = rerankMerged(allResults).slice(0, limit);
-    } else if (allResults.length > 0 && vectorTargets.length === 1 && !graphTarget) {
-      // Single vector target — keep original order (already sorted by cosine)
-      allResults = allResults.slice(0, limit);
+      allResults = rerankMerged(allResults);
     }
 
     // Build output with routing explanation
@@ -146,8 +146,25 @@ server.registerTool(
     if (allResults.length === 0) {
       output += "No matching records found.";
     } else {
-      const formatted = allResults.map((r, i) => `#${i + 1} [${r._collection}] ${formatResult(r, r._collection)}`);
-      output += formatted.join("\n\n");
+      // ── §2.5 Prune & Summarize via lightweight local LLM ──
+      const pruned = await pruneAndSummarize(query, allResults);
+
+      if (pruned) {
+        output += `## Summary\n${pruned}\n\n`;
+      }
+
+      // Always include raw results as reference (sliced to limit)
+      // allResults is already sorted (reranked for parallel, cosine-sorted for single target)
+      const sliced = allResults.slice(0, limit);
+
+      if (pruned && sliced.length > 3) {
+        // When pruned summary exists, show only top-3 raw results as source reference
+        const formatted = sliced.slice(0, 3).map((r, i) => `#${i + 1} [${r._collection}] ${formatResult(r, r._collection)}`);
+        output += `## Sources (top 3 of ${sliced.length})\n${formatted.join("\n\n")}`;
+      } else {
+        const formatted = sliced.map((r, i) => `#${i + 1} [${r._collection}] ${formatResult(r, r._collection)}`);
+        output += formatted.join("\n\n");
+      }
     }
 
     return { content: [{ type: "text", text: output }] };
