@@ -3,10 +3,27 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
 import { z } from "zod";
-import fetch from "node-fetch";
+import fetch, { Request as NodeRequest } from "node-fetch";
+import { Hono } from "hono";
+import { serve } from "@hono/node-server";
+import { createWriteStream } from "fs";
 import { extractQueryFeatures, routeQuery, pruneAndSummarize } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
+
+// Log file for tracking Hook vs MCP tool invocations (visible via `tail -f`)
+const LOG_FILE = process.env.FOCUS_LOG_FILE;
+let logStream = null;
+if (LOG_FILE) {
+  logStream = createWriteStream(LOG_FILE, { flags: "a" });
+}
+
+function log(...args) {
+  const msg = args.map((a) => (typeof a === "object" ? JSON.stringify(a) : String(a))).join(" ");
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${msg}\n`;
+  if (logStream) logStream.write(line);
+}
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 
 const qdrant = new QdrantClient({ url: QDRANT_URL });
@@ -93,6 +110,8 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
+    log(`[MCP search_memory] source=mcp, query="${query.slice(0, 80)}", limit=${limit}`);
+
     // Step 1: extract features and score backends (§1.2)
     const features = extractQueryFeatures(query);
     const route = routeQuery(query, features);
@@ -167,6 +186,7 @@ server.registerTool(
       }
     }
 
+    log(`[MCP search_memory] done, results=${allResults.length}, summary=${pruned ? 'yes' : 'no'}`);
     return { content: [{ type: "text", text: output }] };
   }
 );
@@ -597,5 +617,155 @@ server.registerTool(
   }
 );
 
+// ─── HTTP Server: Generic Search V1 / UserPromptSubmit Hook endpoint ───
+
+const httpApp = new Hono();
+const API_TOKEN = process.env.CONTEXT_API_TOKEN || "focus-memory-local";
+
+/**
+ * Shared search core — reused by both MCP tool and HTTP hook.
+ * Returns { allResults, route } from Qdrant vector + graph search.
+ */
+async function doSearch(query) {
+  const features = extractQueryFeatures(query);
+  const route = routeQuery(query, features);
+
+  const vectorTargets = route.targets.filter((t) => t !== "graph");
+  const graphTarget = route.targets.includes("graph") ? "graph" : null;
+
+  let allResults = [];
+
+  if (vectorTargets.length > 0) {
+    const perCollectionLimit = 10;
+    const vector = await embed(query);
+
+    const searches = vectorTargets.map(async (col) => {
+      const results = await qdrant.search(col, {
+        vector,
+        limit: perCollectionLimit,
+        with_payload: true,
+      });
+      return results.map((r) => ({ ...r, _collection: col }));
+    });
+
+    const batches = await Promise.all(searches);
+    allResults.push(...batches.flat());
+  }
+
+  if (graphTarget) {
+    const graphResults = await searchGraph(query, 10);
+    allResults.push(...graphResults);
+  }
+
+  if (allResults.length > 0 && route.mode === "parallel") {
+    allResults = rerankMerged(allResults);
+  }
+
+  return { allResults, route };
+}
+
+/** Format a result title from payload for display */
+function getTitleFromPayload(payload) {
+  if (!payload) return "";
+  if (payload.summary_text) return payload.summary_text;
+  if (payload.content) return payload.content.substring(0, 120);
+  if (payload.name && payload.file) return `${payload.name} @ ${payload.file}`;
+  if (payload.caller_name && payload.target_name) return `${payload.caller_name} → ${payload.target_name}`;
+  return JSON.stringify(payload).substring(0, 120);
+}
+
+httpApp.post("/v1/context/search", async (c) => {
+  // Auth check
+  const token = c.req.header("Authorization")?.replace("Bearer ", "");
+  if (token !== API_TOKEN) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
+  }
+
+  const query = typeof body.prompt === "string" ? body.prompt.trim() : "";
+  if (!query) {
+    return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
+  }
+
+  log(`[Hook /v1/context/search] source=hook, query="${query.slice(0, 80)}"`);
+
+  // Search core (same logic as search_memory MCP tool)
+  let allResults;
+  try {
+    const result = await doSearch(query);
+    allResults = result.allResults;
+  } catch (err) {
+    log(`[Hook /v1/context/search] search failed: ${err.message}`);
+    return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
+  }
+
+  if (!allResults || allResults.length === 0) {
+    return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
+  }
+
+  // BONSAI prune & summarize (graceful fallback)
+  let prunedSummary = null;
+  try {
+    prunedSummary = await pruneAndSummarize(query, allResults);
+  } catch (err) {
+    log(`[Hook /v1/context/search] prune failed: ${err.message}`);
+  }
+
+  log(`[Hook /v1/context/search] done, results=${allResults.length}, summary=${prunedSummary ? 'yes' : 'no'}`);
+
+  // Build UserPromptSubmitOutput.additionalContext
+  const sliced = allResults.slice(0, prunedSummary ? 3 : 5);
+  let additionalContext = "## 검색 결과 (자동 주입)\n\n";
+
+  if (prunedSummary) {
+    additionalContext += `### 요약\n${prunedSummary}\n\n`;
+    additionalContext += `### 출처 (top ${Math.min(sliced.length, allResults.length)} of ${allResults.length})\n`;
+  }
+
+  sliced.forEach((r, i) => {
+    const col = r._collection || "unknown";
+    const title = getTitleFromPayload(r.payload);
+    additionalContext += `${i + 1}. **${col}** — ${title}\n`;
+    if (!prunedSummary) {
+      additionalContext += `   ${formatResult(r, col)}\n`;
+    }
+  });
+
+  return c.json({ hookEventName: "UserPromptSubmit", additionalContext });
+});
+
+// ─── Start servers ───
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
+console.error("[FocusMemory] MCP stdio server ready");
+
+// HTTP server (parallel — separate TCP port, does not interfere with stdio)
+const httpPort = parseInt(process.env.HTTP_PORT || "3900", 10);
+try {
+  const httpServer = await serve({ fetch: httpApp.fetch, port: httpPort });
+  console.error(`[FocusMemory] HTTP server listening on :${httpPort}`);
+  // serve() resolves when listen() callback fires, but actual bind errors
+  // are emitted asynchronously as 'error' events — catch them to avoid crashing MCP stdio.
+  if (httpServer && typeof httpServer.on === "function") {
+    httpServer.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`[FocusMemory] HTTP port ${httpPort} already in use — running MCP stdio only`);
+      } else {
+        console.error("[FocusMemory] HTTP server error:", err.message);
+      }
+    });
+  }
+} catch (err) {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[FocusMemory] HTTP port ${httpPort} already in use — running MCP stdio only`);
+  } else {
+    console.error("[FocusMemory] HTTP server failed:", err.message);
+  }
+}

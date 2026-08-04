@@ -273,8 +273,12 @@ FocusMemory treats those as first-class problems, not edge cases. Read-only retr
 ```
 FocusMemory/
 ├── README.md
+├── qwen-code-extension/      # qwen-code extension — manifest + AGENTS.md Hard Gate rules
+│   ├── qwen-extension.json   # Extension manifest (mcpServers + hooks blocks)
+│   ├── AGENTS.md             # Search protocol rules for the agent loop
+│   └── README.md             # Installation & usage guide
 └── work-memory-mcp/          # MCP server (v0 core)
-    ├── index.js              # MCP server — 6 tools: search_memory (with prune & summarize), query_graph, search_web, etc.
+    ├── index.js              # MCP stdio + Hono HTTP — 6 tools, /v1/context/search endpoint
     ├── createCollection.js   # Initialize Qdrant collections & payload indexes
     ├── buildGraph.js         # tree-sitter JS + regex PHP → function nodes + call edges
     ├── ingestDocs.js         # Chunk + embed docs/*.md → project_facts collection
@@ -340,6 +344,20 @@ This scans for `.js` and `.php` files, extracts function definitions and intra-f
 | `query_graph` | Code graph: "who calls X?", "functions in file Y", dependencies |
 | `remember_decision` | Write a new decision/fact into work_memory |
 | `search_web` | Web search via local search server (localhost:18080) |
+
+<br>
+
+---
+
+## Qwen Code Extension
+
+FocusMemory ships a ready-to-install extension for **[qwen-code](https://github.com/QwenLM/qwen-code)** — zero upstream modifications required. The extension wires all six MCP tools and an auto-recall HTTP hook through a single `qwen-extension.json` manifest, plus an `AGENTS.md` that enforces the Hard Gate search protocol inside the agent loop.
+
+```
+User prompt → [HTTP Hook: auto-recall] → context injected → [Agent Loop + MCP tools] → [Write-back to Qdrant]
+```
+
+See [`qwen-code-extension/`](qwen-code-extension/) for installation and usage details.
 
 <br>
 
