@@ -5,7 +5,7 @@ const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completi
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const BONSAI_URL = process.env.BONSAI_URL || "http://127.0.0.1:8081/v1/chat/completions";
-const BONSAI_MODEL = process.env.BONSAI_MODEL || "qwen2.5-7b";
+const BONSAI_MODEL = process.env.BONSAI_MODEL || "bonsai-27b";
 
 export const qdrant = new QdrantClient({ url: QDRANT_URL });
 
