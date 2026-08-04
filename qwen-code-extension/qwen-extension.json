@@ -1,0 +1,43 @@
+{
+  "name": "focus-memory",
+  "displayName": "FocusMemory MCP + Auto-recall",
+  "description": "Qdrant-based work memory, project facts graph search and automatic context recall for qwen-code",
+  "version": "1.0.0",
+
+  "mcpServers": {
+    "focus-memory": {
+      "command": "node",
+      "args": [
+        "/opt/homebrew/var/www/FocusMemory/work-memory-mcp/index.js"
+      ],
+      "env": {
+        "QDRANT_URL": "http://localhost:6333",
+        "BGE_URL": "http://localhost:8080/v1/embeddings",
+        "BONSAI_URL": "http://localhost:8081/v1/chat/completions",
+        "HTTP_PORT": "3900",
+        "CONTEXT_API_TOKEN": "focus-memory-local",
+        "FOCUS_LOG_FILE": "/tmp/focus-memory.log"
+      }
+    }
+  },
+
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "description": "FocusMemory auto context search — retrieves related work history and decisions from Qdrant on every prompt submission",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:3900/v1/context/search",
+            "timeout": 8,
+            "headers": {
+              "Authorization": "Bearer focus-memory-local",
+              "Content-Type": "application/json",
+              "X-Source": "hook"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
