@@ -186,7 +186,7 @@ server.registerTool(
       }
     }
 
-    log(`[MCP search_memory] done, results=${allResults.length}, summary=${pruned ? 'yes' : 'no'}`);
+    log(`[MCP search_memory] done, results=${allResults.length}`);
     return { content: [{ type: "text", text: output }] };
   }
 );
