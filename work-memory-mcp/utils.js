@@ -327,7 +327,7 @@ export async function inferTopicKey(content) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: BONSAI_MODEL,
-        messages: [{ role: "user", content: prompt }],
+        prompt: prompt,
         temperature: 0.1,
         max_tokens: 64,
       }),
@@ -335,8 +335,8 @@ export async function inferTopicKey(content) {
 
     if (res.status === 200) {
       const data = await res.json();
-      if (data.choices?.[0]?.message?.content) {
-        return data.choices[0].message.content.trim().toLowerCase();
+      if (data.choices?.[0]?.text) {
+        return data.choices[0].text.trim().toLowerCase();
       }
     }
   } catch {
@@ -419,14 +419,14 @@ ${formatted}
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
+    const timeout = setTimeout(() => controller.abort(), 120000);
 
     const res = await fetch(BONSAI_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: BONSAI_MODEL,
-        messages: [{ role: "user", content: prompt }],
+        prompt: prompt,
         temperature: 0.1,
         max_tokens: 2048,
       }),
@@ -441,15 +441,15 @@ ${formatted}
     }
 
     const data = await res.json();
-    if (!data.choices || !data.choices[0]?.message?.content) {
+    if (!data.choices || !data.choices[0]?.text) {
       console.error("[pruneAndSummarize] unexpected response structure, falling back");
       return null;
     }
 
-    return data.choices[0].message.content.trim();
+    return data.choices[0].text.trim();
   } catch (err) {
     if (err.name === "AbortError") {
-      console.error("[pruneAndSummarize] timeout (30s), falling back to raw");
+      console.error("[pruneAndSummarize] timeout (120s), falling back to raw");
     } else {
       console.error(`[pruneAndSummarize] error: ${err.message}, falling back to raw`);
     }
