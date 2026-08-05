@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fs from "fs/promises";
 import path from "path";
+import { spawn } from "child_process";
 import { qdrant, embed, chunkDocument, deletePointsByDoc, DOCS_SYSTEM_PROMPT, PLANS_SYSTEM_PROMPT } from "./utils.js";
 
 const STATE_FILE = path.join(process.cwd(), "ingest_state.json");
@@ -293,6 +294,32 @@ async function main() {
     }
     console.log("");
   }
+
+  // ── Code chunk indexing (incremental, unless --force) ─────────
+  console.log("--- Indexing code chunks ---");
+
+  const indexScript = path.join(path.dirname(new URL(import.meta.url).pathname), "semantic_codesearch", "indexCodeChunks.js");
+  const codeArgs = [indexScript];
+  if (process.env.GRAPH_ROOT) {
+    codeArgs.push(process.env.GRAPH_ROOT);
+  }
+  if (forceAll) {
+    codeArgs.push("--force");
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn("node", codeArgs, {
+      env: process.env,
+      stdio: "inherit",
+    });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`indexCodeChunks exited with code ${code}`));
+    });
+    child.on("error", reject);
+  });
+
+  console.log("");
 
   // ── Summary ───────────────────────────────────────────────────
   totalUnchanged = Object.keys(state.files).filter(k => currentFiles.has(k)).length - totalModified;
