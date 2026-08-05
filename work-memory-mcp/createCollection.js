@@ -97,6 +97,26 @@ async function createCodeChunksCollection() {
   console.log("[indexed] code_chunks: payload indexes for language, entity_type, file_path");
 }
 
+async function createDecisionChainsCollection() {
+  const collections = (await qdrant.getCollections()).collections;
+  if (!collections.some((c) => c.name === "decision_chains")) {
+    await qdrant.createCollection("decision_chains", {
+      vectors: { size: VECTOR_SIZE, distance: "Cosine" },
+    });
+    console.log('[created] collection "decision_chains" created');
+  } else {
+    console.log('[skip] collection "decision_chains" already exists');
+  }
+
+  // Payload indexes for graph traversal and topic grouping
+  await qdrant.createPayloadIndex("decision_chains", { field_name: "decision_id", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("decision_chains", { field_name: "supersedes", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("decision_chains", { field_name: "topic_key", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("decision_chains", { field_name: "status", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("decision_chains", { field_name: "node_type", field_schema: "keyword" });
+  console.log("[indexed] decision_chains: payload indexes for decision_id, supersedes, topic_key, status, node_type");
+}
+
 async function main() {
   try {
     await createCollectionIfNotExists("work_memory");
@@ -104,6 +124,7 @@ async function main() {
     await createPayloadIndexes();
     await createGraphCollections();
     await createCodeChunksCollection();
+    await createDecisionChainsCollection();
     console.log("\nDone. Check at http://127.0.0.1:6333/dashboard");
   } catch (err) {
     console.error("Error:", err.message);
