@@ -821,8 +821,20 @@ httpApp.post("/v1/context/search", async (c) => {
 
 // ─── Start servers ───
 
+const banner = [
+  "       /\\_/\\   ",
+  "      ( o.o )   \"Grep finds code.",
+  "       > ^ <     Vectors find meaning.",
+  "      /     \\    I remember why.\"",
+  "     | |   | |",
+  "     (_)_)(_)=[]=============>  (FocusMemory Katana)",
+  "",
+  "  [ focus-memory v0.1.0 — Agentic Memory Runtime ]",
+];
+
 const transport = new StdioServerTransport();
 await server.connect(transport);
+console.error(banner.join("\n"));
 console.error("[FocusMemory] MCP stdio server ready");
 
 // HTTP server (parallel — separate TCP port, does not interfere with stdio)
