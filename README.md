@@ -2,14 +2,7 @@
 
 # FocusMemory
 
-```
-       /\_/\   
-      ( o.o )   "Grep finds code.
-       > ^ <     Vectors find meaning.
-      /     \    I remember why."
-     | |   | |
-     (_)_)(_)=[]=============>  (FocusMemory Katana)
-```
+> **Grep finds code. Vectors find meaning. I remember why.**
 
 **Memory infrastructure for agentic coding.**
 
