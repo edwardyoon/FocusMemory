@@ -1,3 +1,11 @@
+```
+       /\_/\   
+      ( o.o )   "Grep finds code.
+       > ^ <     Vectors find meaning.
+      /     \    I remember why."
+     | |   | |
+     (_)_)(_)=[]=============>  (FocusMemory Katana)
+```
 <div align="center">
 
 # FocusMemory
