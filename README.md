@@ -1,11 +1,3 @@
-```
-       /\_/\   
-      ( o.o )   "Grep finds code.
-       > ^ <     Vectors find meaning.
-      /     \    I remember why."
-     | |   | |
-     (_)_)(_)=[]=============>  (FocusMemory Katana)
-```
 <div align="center">
 
 # FocusMemory
@@ -15,6 +7,15 @@
 **Memory infrastructure for agentic coding.**
 
 </div>
+
+```
+       /\_/\   
+      ( o.o )   "Grep finds code.
+       > ^ <     Vectors find meaning.
+      /     \    I remember why."
+     | |   | |
+     (_)_)(_)=[]=============>  (FocusMemory Katana)
+```
 
 <br>
 
