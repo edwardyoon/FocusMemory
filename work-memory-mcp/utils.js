@@ -261,6 +261,107 @@ export async function deletePointsByDoc(collection, sourceDoc) {
   });
 }
 
+// ─── Decision Chains — topic key inference via BONSAI ──────────────
+
+/**
+ * Infer a topic_key for a new decision by comparing against existing topics.
+ * Uses embedding similarity first (threshold 0.75), then falls back to BONSAI classification.
+ */
+export async function inferTopicKey(content) {
+  // Step 1: scroll recent topic_keys from decision_chains
+  let candidates;
+  try {
+    const result = await qdrant.scroll("decision_chains", {
+      limit: 200,
+      with_payload: ["topic_key"],
+    });
+    candidates = result.points.map((p) => p.payload.topic_key).filter(Boolean);
+  } catch {
+    // Collection may not exist yet (first run after create-collections)
+    candidates = [];
+  }
+
+  const uniqueTopics = [...new Set(candidates)];
+
+  if (uniqueTopics.length === 0) {
+    // No existing topics — extract a simple key from content (first identifier-like token)
+    const match = content.match(/[\w.\/-]+\.\w{2,4}/);
+    return match ? match[0] : "general";
+  }
+
+  // Step 2: embedding similarity check against each unique topic
+  const vector = await embed(content);
+  if (vector) {
+    for (const topic of uniqueTopics) {
+      try {
+        const matches = await qdrant.scroll("decision_chains", {
+          filter: { must: [{ key: "topic_key", match: { value: topic } }] },
+          limit: 1,
+          with_payload: ["content"],
+        });
+        if (matches.points.length > 0) {
+          const existingContent = matches.points[0].payload.content || "";
+          const existingVector = await embed(existingContent);
+          if (existingVector && cosineSimilarity(vector, existingVector) >= 0.75) {
+            return topic;
+          }
+        }
+      } catch {
+        // Skip on error, try next topic
+      }
+    }
+  }
+
+  // Step 3: BONSAI classification fallback
+  const topicList = uniqueTopics.slice(0, 20).join(", ");
+  const prompt = `아래 결정 내용을 가장 잘 설명하는 주제(topic)를 선택하거나 새 주제를 제안하세요.
+
+기존 주제 목록: ${topicList}
+결정 내용: ${content}
+
+기존 주제 중 하나와 일치하면 그 이름만, 아니면 새로운 짧은 키워드(2~4단어, snake_case)로 답하세요.`;
+
+  try {
+    const res = await fetch(BONSAI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: BONSAI_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.1,
+        max_tokens: 64,
+      }),
+    });
+
+    if (res.status === 200) {
+      const data = await res.json();
+      if (data.choices?.[0]?.message?.content) {
+        return data.choices[0].message.content.trim().toLowerCase();
+      }
+    }
+  } catch {
+    // BONSAI unavailable — fallback to simple extraction
+  }
+
+  const fileMatch = content.match(/[\w.\/-]+\.\w{2,4}/);
+  return fileMatch ? fileMatch[0] : "general";
+}
+
+/** Compute cosine similarity between two vectors */
+function cosineSimilarity(a, b) {
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
 // ─── §2.5 Prune & Summarize — self-editing via lightweight local LLM ──
 
 /**
@@ -390,15 +491,15 @@ export function extractQueryFeatures(query) {
   const identifierCount = countIdentifierTokens(query);
 
   // Korean keywords must match as whole words (not single characters in a class)
-  const koreanCausal = new Set(["왜", "이유", "근거", "결정"]);
+  const koreanCausal = new Set(["왜", "이유", "근거", "결정", "바꾼", "대체", "전환"]);
   const koreanStructural = new Set(["호출", "의존", "연결"]);
   const koreanTemporal = new Set(["최근", "언제", "마지막", "변경"]);
 
   return {
     /** Ratio of code-identifier-like tokens to total tokens */
     identifier_ratio: identifierCount / totalTokens,
-    /** Causal signals: why, because, reason, 결정, 이유, 왜, 근거 */
-    is_causal: /\b(why|because|reason)\b/.test(lower) || [...koreanCausal].some((w) => query.includes(w)),
+    /** Causal signals: why, because, reason, 결정, 이유, 왜, 근거, 바꾼, 대체, 전환 */
+    is_causal: /\b(why|because|reason|previously|before\s+we)\b/.test(lower) || [...koreanCausal].some((w) => query.includes(w)),
     /** Structural signals: calls, caller, depends on, uses, connected to, 호출, 의존, 연결 */
     is_structural: /\b(calls?|caller|depends?\s+on|uses?|connected\s+to)\b/.test(lower) || [...koreanStructural].some((w) => query.includes(w)),
     /** Temporal signals: when, latest, version, recent, 최근, 언제, 마지막, 변경 */
@@ -413,8 +514,9 @@ export function extractQueryFeatures(query) {
  * - work_memory    : vector search (bge-m3 embedding required)
  * - project_facts  : vector search (bge-m3 embedding required)
  * - graph          : keyword scroll only (no embedding, payload filter)
+ * - decision_chains: vector search + chain traversal (causal queries)
  */
-const BACKENDS = ["work_memory", "project_facts", "graph"];
+const BACKENDS = ["work_memory", "project_facts", "graph", "decision_chains"];
 
 /**
  * Score a single backend against query features (§1.2).
@@ -519,6 +621,14 @@ export function routeQuery(query, features) {
       // Penalize when query is clearly a knowledge/decision question
       if (features.is_causal || features.is_temporal) {
         spec -= 0.3;
+      }
+    } else if (b === "decision_chains") {
+      // Causal chain: strongest fit for causal queries, moderate for temporal
+      if (features.is_causal)   spec += 0.8;
+      if (features.is_temporal) spec += 0.3;
+      // Penalize pure code-level or general knowledge queries
+      if (features.identifier_ratio > 0.4 && !features.is_causal) {
+        spec -= 0.2;
       }
     }
 

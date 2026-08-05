@@ -7,7 +7,7 @@ import fetch, { Request as NodeRequest } from "node-fetch";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createWriteStream } from "fs";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize } from "./utils.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 
@@ -117,10 +117,25 @@ server.registerTool(
     const route = routeQuery(query, features);
 
     // Separate targets by search mode
-    const vectorTargets = route.targets.filter((t) => t !== "graph");
+    const vectorTargets = route.targets.filter((t) => t !== "graph" && t !== "decision_chains");
     const graphTarget = route.targets.includes("graph") ? "graph" : null;
+    const chainTarget = route.primary === "decision_chains" || route.targets.includes("decision_chains")
+      ? "decision_chains"
+      : null;
 
     let allResults = [];
+    let chainOutput = null;
+
+    // Decision chains: causal query → trace full chain (no BONSAI summary)
+    if (chainTarget === "decision_chains") {
+      const vector = await embed(query);
+      if (vector) {
+        const hits = await qdrant.search("decision_chains", { vector, limit: 1 });
+        if (hits.length > 0 && hits[0]?.payload?.decision_id) {
+          chainOutput = await traceChainInternal(hits[0].payload.decision_id);
+        }
+      }
+    }
 
     if (vectorTargets.length > 0) {
       // Fetch more raw results for pruning — the LLM will compress them down
@@ -162,7 +177,12 @@ server.registerTool(
     let output = `Route: ${route.mode} [${route.targets.join(", ")}] | Primary: ${route.primary} | Scores: ${scoreStr}\n`;
     output += `Features: causal=${features.is_causal}, temporal=${features.is_temporal}, structural=${features.is_structural}, id_ratio=${features.identifier_ratio.toFixed(2)}\n\n`;
 
-    if (allResults.length === 0) {
+    // Decision chain output (if causal query matched decision_chains)
+    if (chainOutput) {
+      output += `## Decision Chain\n${chainOutput}\n`;
+    }
+
+    if (allResults.length === 0 && !chainOutput) {
       output += "No matching records found.";
     } else {
       // ── §2.5 Prune & Summarize via lightweight local LLM ──
@@ -270,6 +290,70 @@ function isStructuralQuery(lower) {
   return /\b(calls?|caller|depends?\s+on)\b/.test(lower) || [...korean].some((w) => lower.includes(w));
 }
 
+/**
+ * Internal: trace full causal chain from an anchor decision_id.
+ * Returns formatted string (same logic as trace_decision_chain tool).
+ */
+async function traceChainInternal(anchorId) {
+  const chain = [];
+  const visited = new Set();
+
+  async function getById(id) {
+    const results = await qdrant.scroll("decision_chains", {
+      filter: { must: [{ key: "decision_id", match: { value: id } }] },
+      limit: 1,
+      with_payload: true,
+    });
+    return results.points[0] || null;
+  }
+
+  async function walkBackward(id) {
+    if (!id || visited.has(id)) return;
+    visited.add(id);
+    const node = await getById(id);
+    if (!node) return;
+    chain.unshift(node);
+    if (node.payload.supersedes) await walkBackward(node.payload.supersedes);
+  }
+
+  async function walkForward(id) {
+    if (!id || visited.has(id)) return;
+    visited.add(id);
+    const node = await getById(id);
+    if (!node) return;
+    if (!chain.find((c) => c.id === node.id)) chain.push(node);
+    if (node.payload.superseded_by) await walkForward(node.payload.superseded_by);
+  }
+
+  await walkBackward(anchorId);
+  await walkForward(anchorId);
+
+  const topicKey = chain[0]?.payload?.topic_key || "(unknown)";
+  let output = `${topicKey} chain (${chain.length} step${chain.length > 1 ? "s" : ""}):\n\n`;
+
+  for (let i = 0; i < chain.length; i++) {
+    const n = chain[i].payload;
+    const date = new Date(n.created_at).toISOString().split("T")[0];
+    const statusTag = n.status === "superseded" ? " (superseded)" : n.status === "active" ? " ← current" : "";
+    output += `${i + 1}. [${date}] ${n.content}${statusTag}\n`;
+    if (n.reasoning) {
+      output += `   → 이유: ${n.reasoning}\n`;
+    }
+    if (n.file_paths?.length > 0) {
+      output += `   → 파일: ${n.file_paths.join(", ")}\n`;
+    }
+    if (n.supersedes) {
+      const supersededIdx = chain.findIndex((c) => c.payload.decision_id === n.supersedes);
+      if (supersededIdx >= 0) {
+        output += `   → 대체: #${supersededIdx + 1}\n`;
+      }
+    }
+    output += "\n";
+  }
+
+  return output;
+}
+
 // --- Tool 1: search past work history and decisions ---
 server.registerTool(
   "search_work_memory",
@@ -341,35 +425,172 @@ server.registerTool(
   "remember_decision",
   {
     title: "Remember Decision",
-    description: "Immediately save an important decision or resolved issue to work_memory.",
+    description:
+      "Save an important decision, resolved issue, or design change. Stores in both work_memory and decision_chains for causal chain tracking.",
     inputSchema: {
-      summary_text: z.string(),
-      detail: z.string().optional().default(""),
-      project: z.enum(["업체창고", "골목창고", "llm_infra", "kilo_setup"]),
-      type: z.enum(["decision", "bug_resolved", "todo"]),
+      summary_text: z.string().describe("Brief summary of the decision"),
+      detail: z.string().optional().default("").describe("Detailed explanation"),
+      reasoning: z.string().optional().default("").describe("Why this decision was made (causal reasoning)"),
+      project: z.enum(["업체창고", "골목창고", "llm_infra", "kilo_setup"]).default("업체창고"),
+      type: z.enum(["decision", "bug_resolved", "todo"]).default("decision"),
       related_files: z.array(z.string()).optional().default([]),
+      topic_key: z.string().optional().default("").describe("Key that groups decisions on the same topic (e.g. discount_threshold). Auto-inferred if empty."),
+      supersedes: z.string().optional().default("").describe("decision_id of a previous decision this replaces"),
+      caused_by: z.array(z.string()).optional().default([]).describe("Decision IDs or event IDs that triggered this decision"),
     },
   },
-  async ({ summary_text, detail, project, type, related_files }) => {
+  async ({ summary_text, detail, reasoning, project, type, related_files, topic_key, supersedes, caused_by }) => {
+    // Save to work_memory (backward compatible)
     const vector = await embed(summary_text);
-    await qdrant.upsert("work_memory", {
-      points: [
-        {
-          id: crypto.randomUUID(),
-          vector,
-          payload: {
-            type,
-            project,
-            summary_text,
-            detail,
-            related_files,
-            status: "open",
-            timestamp: new Date().toISOString(),
+    if (vector) {
+      await qdrant.upsert("work_memory", {
+        points: [
+          {
+            id: crypto.randomUUID(),
+            vector,
+            payload: {
+              type,
+              project,
+              summary_text,
+              detail,
+              related_files,
+              status: "open",
+              timestamp: new Date().toISOString(),
+            },
           },
-        },
-      ],
-    });
-    return { content: [{ type: "text", text: "Saved successfully" }] };
+        ],
+      });
+    }
+
+    // Save to decision_chains (causal chain)
+    const decision_id = crypto.randomUUID();
+    const resolvedTopic = topic_key || (await inferTopicKey(summary_text));
+    const chainContent = `${summary_text}${reasoning ? "\n" + reasoning : ""}`;
+    const chainVector = await embed(chainContent);
+
+    if (chainVector) {
+      await qdrant.upsert("decision_chains", {
+        points: [
+          {
+            id: decision_id,
+            vector: chainVector,
+            payload: {
+              decision_id,
+              content: summary_text,
+              reasoning: reasoning || "",
+              supersedes: supersedes || null,
+              superseded_by: null,
+              caused_by,
+              topic_key: resolvedTopic,
+              file_paths: related_files,
+              status: "active",
+              node_type: type === "bug_resolved" ? "bug_report" : "decision",
+              created_at: new Date().toISOString(),
+            },
+          },
+        ],
+      });
+
+      // Update superseded decision — reverse link + status change
+      if (supersedes) {
+        await qdrant.setPayload("decision_chains", {
+          points: [supersedes],
+          payload: { superseded_by: decision_id, status: "superseded" },
+        });
+      }
+    }
+
+    return { content: [{ type: "text", text: `Saved successfully. decision_id: ${decision_id}, topic_key: ${resolvedTopic}` }] };
+  }
+);
+
+// --- Tool 3b: trace causal decision chain ---
+server.registerTool(
+  "trace_decision_chain",
+  {
+    title: "Trace Decision Chain",
+    description:
+      "Reconstruct the full causal chain of decisions for a given topic or decision ID. Returns the timeline of how and why decisions evolved (no BONSAI summarization — structure preserved as-is).",
+    inputSchema: {
+      query: z.string().optional().default("").describe("Natural language query, e.g. 'discount_threshold logic'"),
+      decision_id: z.string().optional().default("").describe("Start from a specific decision ID (alternative to query)"),
+      direction: z.enum(["backward", "forward", "both"]).default("both").describe("Traversal direction along the chain"),
+    },
+  },
+  async ({ query, decision_id, direction }) => {
+    // Find anchor node
+    let anchor = decision_id || null;
+
+    if (!anchor && query) {
+      const vector = await embed(query);
+      if (vector) {
+        const hits = await qdrant.search("decision_chains", { vector, limit: 1 });
+        anchor = hits[0]?.payload?.decision_id || null;
+      }
+    }
+
+    if (!anchor) {
+      return { content: [{ type: "text", text: "No related decisions found." }] };
+    }
+
+    const chain = [];
+    const visited = new Set();
+
+    async function getById(id) {
+      const results = await qdrant.scroll("decision_chains", {
+        filter: { must: [{ key: "decision_id", match: { value: id } }] },
+        limit: 1,
+        with_payload: true,
+      });
+      return results.points[0] || null;
+    }
+
+    async function walkBackward(id) {
+      if (!id || visited.has(id)) return;
+      visited.add(id);
+      const node = await getById(id);
+      if (!node) return;
+      chain.unshift(node);
+      if (node.payload.supersedes) await walkBackward(node.payload.supersedes);
+    }
+
+    async function walkForward(id) {
+      if (!id || visited.has(id)) return;
+      visited.add(id);
+      const node = await getById(id);
+      if (!node) return;
+      if (!chain.find((c) => c.id === node.id)) chain.push(node);
+      if (node.payload.superseded_by) await walkForward(node.payload.superseded_by);
+    }
+
+    if (direction !== "forward") await walkBackward(anchor);
+    if (direction !== "backward") await walkForward(anchor);
+
+    // Format output — preserve structure, no BONSAI summary
+    const topicKey = chain[0]?.payload?.topic_key || "(unknown)";
+    let output = `${topicKey} chain (${chain.length} step${chain.length > 1 ? "s" : ""}):\n\n`;
+
+    for (let i = 0; i < chain.length; i++) {
+      const n = chain[i].payload;
+      const date = new Date(n.created_at).toISOString().split("T")[0];
+      const statusTag = n.status === "superseded" ? " (superseded)" : n.status === "active" ? " ← current" : "";
+      output += `${i + 1}. [${date}] ${n.content}${statusTag}\n`;
+      if (n.reasoning) {
+        output += `   → 이유: ${n.reasoning}\n`;
+      }
+      if (n.file_paths?.length > 0) {
+        output += `   → 파일: ${n.file_paths.join(", ")}\n`;
+      }
+      if (n.supersedes) {
+        const supersededIdx = chain.findIndex((c) => c.payload.decision_id === n.supersedes);
+        if (supersededIdx >= 0) {
+          output += `   → 대체: #${supersededIdx + 1}\n`;
+        }
+      }
+      output += "\n";
+    }
+
+    return { content: [{ type: "text", text: output }] };
   }
 );
 
