@@ -17,8 +17,6 @@
      (_)_)(_)=[]=============>  (FocusMemory Katana)
 ```
 
-<br>
-
 Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
 
 FocusMemory gives your AI coding agent persistent memory: past decisions, project knowledge, semantic code search, and structural dependency graphs — all backed by Qdrant and exposed through a single MCP server.
