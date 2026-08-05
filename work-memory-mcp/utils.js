@@ -330,6 +330,7 @@ export async function inferTopicKey(content) {
         prompt: prompt,
         temperature: 0.1,
         max_tokens: 64,
+        enable_thinking: false,
       }),
     });
 
@@ -429,6 +430,7 @@ ${formatted}
         prompt: prompt,
         temperature: 0.1,
         max_tokens: 2048,
+        enable_thinking: false,
       }),
       signal: controller.signal,
     });
