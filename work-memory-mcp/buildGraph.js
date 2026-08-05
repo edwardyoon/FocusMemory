@@ -1,7 +1,7 @@
 import "dotenv/config";
 import fs from "fs/promises";
 import path from "path";
-import { qdrant } from "./utils.js";
+import { qdrant, scanFiles } from "./utils.js";
 import Parser from "tree-sitter";
 import JSLang from "tree-sitter-javascript";
 
@@ -46,31 +46,48 @@ function extractFromPHPRegex(sourceCode) {
   return { functions, calls };
 }
 
-// ─── File scanning ──────────────────────────────────────────────
+// TypeScript grammar (tree-sitter-typescript) is not compatible with tree-sitter@0.25 yet.
+// Use regex-based fallback similar to PHP — covers export/async functions, class methods, arrow funcs.
+function extractFromTSRegex(sourceCode) {
+  const functions = [];
+  const calls = [];
 
-async function scanFiles(dir, extensions) {
-  const files = [];
-  try {
-    const entries = await fs.readdir(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        if (["node_modules", "vendor", ".git"].includes(entry.name)) continue;
-        files.push(...(await scanFiles(fullPath, extensions)));
-      } else if (extensions.has(path.extname(entry.name).slice(1))) {
-        const stat = await fs.stat(fullPath);
-        if (stat.size <= MAX_FILE_SIZE) {
-          files.push(fullPath);
-        }
-      }
-    }
-  } catch {
-    // directory not accessible, skip silently
+  // Match: (export)? (async)? function name(...)
+  const fnRe = /(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*[<(]/g;
+  let m;
+  while ((m = fnRe.exec(sourceCode)) !== null) {
+    functions.push({ name: m[1], start: sourceCode.substring(0, m.index).split("\n").length - 1 });
   }
-  return files;
+
+  // Match class methods: (public|private|protected)? (async)? methodName(...)
+  const methodRe = /(?:^\s+(?:public|private|protected|readonly|static)\s+)*?(?:async\s+)?(\w+)\s*\(.*?\)\s*(?::\s*\S+\s*)?\{/gm;
+  while ((m = methodRe.exec(sourceCode)) !== null) {
+    if (!/^(if|else|while|for|switch|catch|class)$/.test(m[1])) {
+      functions.push({ name: m[1], start: sourceCode.substring(0, m.index).split("\n").length - 1 });
+    }
+  }
+
+  // Match arrow functions: const/let/var name = ... =>
+  const arrowRe = /(?:const|let|var)\s+(\w+)\s*=.*?=>\s*\{/g;
+  while ((m = arrowRe.exec(sourceCode)) !== null) {
+    functions.push({ name: m[1], start: sourceCode.substring(0, m.index).split("\n").length - 1 });
+  }
+
+  // Match calls (same pattern as JS — dot-separated method calls)
+  const callRe = /(\w+)\s*\(/g;
+  while ((m = callRe.exec(sourceCode)) !== null) {
+    if (!/^(if|else|while|for|foreach|switch|case|return|typeof|instanceof|new|try|catch|throw|async|await|import|export|from|class|extends|implements)$/.test(m[1])) {
+      calls.push({ name: m[1], start: sourceCode.substring(0, m.index).split("\n").length - 1 });
+    }
+  }
+
+  return { functions, calls };
 }
 
-// ─── AST extraction: JavaScript ────────────────────────────────
+// ─── File scanning ──────────────────────────────────────────────
+// scanFiles() imported from utils.js — respects .focusmemoryignore
+
+// ─── AST extraction: JavaScript/TypeScript ──────────────────────
 
 function extractFromJS(sourceCode) {
   const tree = jsParser.parse(sourceCode);
@@ -191,7 +208,7 @@ async function main() {
     }
   }
 
-  const extSet = new Set(["js", "php"]);
+  const extSet = new Set(["js", "ts", "php"]);
   const files = await scanFiles(scanRoot, extSet);
   console.log("[scan] found %d files\n", files.length);
 
@@ -213,6 +230,8 @@ async function main() {
       let result;
       if (ext === "js") {
         result = extractFromJS(sourceCode);
+      } else if (ext === "ts") {
+        result = extractFromTSRegex(sourceCode);
       } else if (ext === "php") {
         result = extractFromPHPRegex(sourceCode);
       } else {

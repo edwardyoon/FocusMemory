@@ -617,6 +617,64 @@ server.registerTool(
   }
 );
 
+// --- Tool 6: semantic code search (natural language → vector similarity on code_chunks) ---
+server.registerTool(
+  "search_code",
+  {
+    title: "Semantic Code Search",
+    description:
+      "Search the codebase semantically using natural language. Use for questions like 'API 키 생성하는 로직', 'DB 연결 pooling 처리'. For exact symbol lookups, prefer query_graph instead.",
+    inputSchema: {
+      query: z.string().describe("Natural language code search query (e.g. 'API 인증 토큰 생성')"),
+      language: z.string().optional().describe("Language filter: php, javascript, typescript (optional)"),
+      entity_type: z.enum(["function", "method", "class"]).optional().describe("Entity type filter (optional)"),
+      min_score: z.number().optional().default(0.4).describe("Similarity threshold (default 0.4, Kilo Code baseline)"),
+      limit: z.number().optional().default(10).describe("Max results (default 10, max 50)"),
+    },
+  },
+  async ({ query, language, entity_type, min_score = 0.4, limit = 10 }) => {
+    log(`[MCP search_code] source=mcp, query="${query.slice(0, 80)}", lang=${language || "any"}, limit=${limit}`);
+
+    const vector = await embed(query);
+    if (!vector) {
+      return { content: [{ type: "text", text: "Embedding failed — BGE server may be down." }] };
+    }
+
+    const must = [];
+    if (language) must.push({ key: "language", match: { value: language } });
+    if (entity_type) must.push({ key: "entity_type", match: { value: entity_type } });
+
+    try {
+      const results = await qdrant.search("code_chunks", {
+        vector,
+        filter: must.length > 0 ? { must } : undefined,
+        score_threshold: min_score,
+        limit: Math.min(limit, 50),
+        with_payload: true,
+      });
+
+      if (results.length === 0) {
+        return { content: [{ type: "text", text: `코드베이스에서 "${query}"와 일치하는 결과가 없습니다.` }] };
+      }
+
+      const formatted = results.map((r, i) => {
+        const p = r.payload;
+        const snippetLang = p.language === "javascript" ? "js" : p.language;
+        return `#${i + 1} \`${p.entity_name}\` (${p.entity_type})\n  file: ${p.file_path}:${p.start_line}-${p.end_line}\n  lang: ${p.language} | score: ${r.score.toFixed(3)}\n  snippet:\n\`\`\`${snippetLang}\n${p.content.slice(0, 500)}\n\`\`\``;
+      });
+
+      const text = `Semantic code search results for "${query}" (${results.length} matches):\n\n${formatted.join("\n\n")}`;
+      log(`[MCP search_code] done, results=${results.length}`);
+      return { content: [{ type: "text", text }] };
+    } catch (err) {
+      if (err.message && err.message.includes("not found")) {
+        return { content: [{ type: "text", text: "code_chunks 컬렉션이 존재하지 않습니다. 먼저 'npm run create-collections'와 'npm run index-chunks'를 실행하세요." }] };
+      }
+      throw err;
+    }
+  }
+);
+
 // ─── HTTP Server: Generic Search V1 / UserPromptSubmit Hook endpoint ───
 
 const httpApp = new Hono();
@@ -635,9 +693,15 @@ async function doSearch(query) {
 
   let allResults = [];
 
+  // Embed once if any vector backend is targeted (needed for both routeQuery targets and code_chunks)
+  const shouldEmbed = vectorTargets.length > 0 || graphTarget;
+  let vector = null;
+  if (shouldEmbed) {
+    vector = await embed(query);
+  }
+
   if (vectorTargets.length > 0) {
     const perCollectionLimit = 10;
-    const vector = await embed(query);
 
     const searches = vectorTargets.map(async (col) => {
       const results = await qdrant.search(col, {
@@ -655,6 +719,21 @@ async function doSearch(query) {
   if (graphTarget) {
     const graphResults = await searchGraph(query, 10);
     allResults.push(...graphResults);
+  }
+
+  // Also search code_chunks for semantic code matches
+  if (vector != null) {
+    try {
+      const codeChunksResults = await qdrant.search("code_chunks", {
+        vector,
+        limit: 5,
+        score_threshold: 0.4,
+        with_payload: true,
+      });
+      allResults.push(...codeChunksResults.map((r) => ({ ...r, _collection: "code_chunks" })));
+    } catch {
+      // code_chunks collection may not exist yet — skip silently
+    }
   }
 
   if (allResults.length > 0 && route.mode === "parallel") {

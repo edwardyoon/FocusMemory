@@ -2,9 +2,10 @@
 
 ## Required Order
 1. **search_memory** — Past work history, decisions, unresolved issues (call first)
-2. **query_graph** — Code dependency questions: function definitions, call relationships
-3. **grep / glob / file read** — Verify actual code location and read files
-4. Code modification or answer
+2. **search_code** — Natural language code search: "Where is this logic?", "Is there a similar pattern?"
+3. **query_graph** — Code dependency questions: function definitions, call relationships
+4. **grep / glob / file read** — Verify actual code location and read files
+5. Code modification or answer
 
 ## Conditional Re-search Rules
 - If context was already injected by Hook (`## 검색 결과 (자동 주입)` header present),

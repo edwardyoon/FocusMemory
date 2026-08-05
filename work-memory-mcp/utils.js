@@ -1,5 +1,7 @@
 import { QdrantClient } from "@qdrant/js-client-rest";
 import fetch from "node-fetch";
+import fs from "fs/promises";
+import path from "path";
 
 const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completions";
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
@@ -8,6 +10,109 @@ const BONSAI_URL = process.env.BONSAI_URL || "http://127.0.0.1:8081/v1/chat/comp
 const BONSAI_MODEL = process.env.BONSAI_MODEL || "bonsai-27b";
 
 export const qdrant = new QdrantClient({ url: QDRANT_URL });
+
+// ─── Ignore pattern loader + file scanner (shared by buildGraph & indexCodeChunks) ──
+
+const IGNORE_FILE = process.env.FOCUS_IGNORE_FILE || path.join("/opt/homebrew/var/www", ".focusmemoryignore");
+let _ignorePatterns = null;
+
+/**
+ * Load .focusmemoryignore patterns from disk.
+ * Returns array of { type, pattern } — cached after first load.
+ */
+export async function loadIgnorePatterns(filePath = IGNORE_FILE) {
+  if (_ignorePatterns) return _ignorePatterns;
+  try {
+    const content = await fs.readFile(filePath, "utf-8");
+    const patterns = [];
+    for (const raw of content.split("\n")) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      patterns.push(parseIgnoreLine(line));
+    }
+    _ignorePatterns = patterns;
+    return patterns;
+  } catch {
+    // File not found — return empty (no exclusions)
+    return (_ignorePatterns = []);
+  }
+}
+
+/** Parse a single .focusmemoryignore line into structured pattern */
+function parseIgnoreLine(line) {
+  if (line.endsWith("/")) {
+    // Directory-only exclusion: match directory component in path
+    return { type: "dir", name: line.slice(0, -1) };
+  } else if (line.includes("*")) {
+    // Glob pattern with wildcards — convert to regex
+    const regex = globToRegex(line);
+    return { type: "glob", regex };
+  } else {
+    // Bare filename/extension match
+    return { type: "name", name: line };
+  }
+}
+
+/** Convert simple glob pattern (e.g. "*.min.js", ".env*") to RegExp */
+function globToRegex(pattern) {
+  let source = "^" + pattern
+    .replace(/\./g, "\\.")
+    .replace(/\*\*/g, "\x00") // temp placeholder for **
+    .replace(/\*/g, "[^/]*")
+    .replace(/\x00/g, ".*")
+    + "$";
+  return new RegExp(source);
+}
+
+/** Check if a relative file path should be excluded by ignore patterns */
+export function isIgnored(relPath, patterns) {
+  for (const p of patterns) {
+    if (p.type === "dir" && relPath.split(path.sep).includes(p.name)) return true;
+    if (p.type === "glob" && p.regex.test(relPath)) return true;
+    if (p.type === "name" && path.basename(relPath) === p.name) return true;
+  }
+  return false;
+}
+
+/**
+ * Recursively scan directory for files with given extensions.
+ * Respects .focusmemoryignore patterns and skips large files.
+ */
+export async function scanFiles(dir, extensions, maxFileSize = 200_000) {
+  const files = [];
+  const patterns = await loadIgnorePatterns();
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        // Quick skip: check directory name against ignore patterns before recursing
+        let skip = false;
+        for (const p of patterns) {
+          if (p.type === "dir" && entry.name === p.name) { skip = true; break; }
+          if (p.type === "name" && entry.name === p.name) { skip = true; break; }
+        }
+        if (skip) continue;
+
+        const subFiles = await scanFiles(path.join(dir, entry.name), extensions, maxFileSize);
+        files.push(...subFiles);
+      } else if (extensions.has(path.extname(entry.name).slice(1))) {
+        const fullPath = path.join(dir, entry.name);
+        const relPath = path.relative(process.cwd(), fullPath);
+        if (!isIgnored(relPath, patterns)) {
+          try {
+            const stat = await fs.stat(fullPath);
+            if (stat.size <= maxFileSize) files.push(fullPath);
+          } catch {
+            // inaccessible file, skip
+          }
+        }
+      }
+    }
+  } catch {
+    // directory not accessible, skip silently
+  }
+  return files;
+}
 
 export const DOCS_SYSTEM_PROMPT = `당신은 기술 문서를 RAG 검색용 지식 조각(chunk)으로 변환하는 전문가입니다.
 

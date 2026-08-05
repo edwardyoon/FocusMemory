@@ -80,12 +80,30 @@ async function createPayloadIndexes() {
   console.log("[indexed] project_facts: payload index created for source_doc");
 }
 
+async function createCodeChunksCollection() {
+  const collections = (await qdrant.getCollections()).collections;
+  if (!collections.some((c) => c.name === "code_chunks")) {
+    await qdrant.createCollection("code_chunks", {
+      vectors: { size: VECTOR_SIZE, distance: "Cosine" },
+    });
+    console.log('[created] collection "code_chunks" created');
+  } else {
+    console.log('[skip] collection "code_chunks" already exists');
+  }
+
+  await qdrant.createPayloadIndex("code_chunks", { field_name: "language", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("code_chunks", { field_name: "entity_type", field_schema: "keyword" });
+  await qdrant.createPayloadIndex("code_chunks", { field_name: "file_path", field_schema: "keyword" });
+  console.log("[indexed] code_chunks: payload indexes for language, entity_type, file_path");
+}
+
 async function main() {
   try {
     await createCollectionIfNotExists("work_memory");
     await createCollectionIfNotExists("project_facts");
     await createPayloadIndexes();
     await createGraphCollections();
+    await createCodeChunksCollection();
     console.log("\nDone. Check at http://127.0.0.1:6333/dashboard");
   } catch (err) {
     console.error("Error:", err.message);
