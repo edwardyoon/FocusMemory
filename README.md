@@ -19,7 +19,9 @@
 
 Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
 
-FocusMemory gives your AI coding agent persistent memory: past decisions, project knowledge, semantic code search, and structural dependency graphs — all backed by Qdrant and exposed through a single MCP server.
+FocusMemory gives your AI coding agent persistent memory: **causal decision chains**, past decisions, project knowledge, semantic code search, and structural dependency graphs — all backed by Qdrant and exposed through a single MCP server.
+
+> **Causal Decision Chains** — Every decision is stored as a linked chain node with `supersedes`/`superseded_by` relationships. Ask "why was this built this way?" and get back the full causal history: what was decided, why it replaced the previous approach, and what came after.
 
 <br>
 
@@ -29,11 +31,12 @@ FocusMemory gives your AI coding agent persistent memory: past decisions, projec
 
 | Capability | How |
 |---|---|
+| **Causal decision chains** | Decisions stored as linked nodes with `supersedes`/`superseded_by` — trace the full "why" history of any architectural choice, from original rationale through every replacement |
 | **Work history** | Decisions, bug fixes, resolved issues — written back after each session so the next agent starts where the last left off |
 | **Project knowledge** | Docs and plans chunked, embedded, and searchable via vector similarity |
 | **Semantic code search** | Natural-language queries against JS/TS/PHP function bodies using BGE-M3 embeddings |
 | **Code graph** | tree-sitter AST parsing → function nodes + call edges for "who calls X?" questions |
-| **Smart routing** | Scoring-based query router dispatches to the right backend (vector vs keyword) automatically |
+| **Smart routing** | Scoring-based query router dispatches to the right backend (vector vs keyword vs decision chain) automatically |
 
 <br>
 
@@ -68,7 +71,7 @@ your-project/
 npm run create-collections
 ```
 
-Creates `work_memory`, `project_facts`, `graph_nodes`, `graph_edges`, and `code_chunks` with payload indexes.
+Creates `work_memory`, `project_facts`, `graph_nodes`, `graph_edges`, `code_chunks`, and `decision_chains` with payload indexes.
 
 ### 3. Ingest docs + plans (one-time)
 
@@ -104,7 +107,7 @@ BGE_URL=http://localhost:8080/v1/embeddings \
 npm start
 ```
 
-Configure your client (Qwen Code, Kilo Code) to connect via stdio transport and you get seven tools available in the agent loop.
+Configure your client (Qwen Code, Kilo Code) to connect via stdio transport and you get eight tools available in the agent loop.
 
 <br>
 
@@ -130,12 +133,13 @@ See [`qwen-code-extension/`](qwen-code-extension/) for installation instructions
 
 | Tool | Purpose |
 |---|---|
-| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph, and code_chunks + BONSAI prune & summarize |
+| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph, code_chunks, and decision_chains + BONSAI prune & summarize |
+| `trace_decision_chain` | **Causal Decision Chain** — trace the full history of a decision: what superseded it, why, and what came after (query or decision_id) |
 | `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
 | `search_project_facts` | DB schemas, infra topology, API specs (direct) |
 | `search_code` | Natural language search over JS/TS/PHP function bodies (vector similarity on code_chunks) |
 | `query_graph` | Code graph: "who calls X?", "functions in file Y", dependencies |
-| `remember_decision` | Write a new decision/fact into work_memory |
+| `remember_decision` | Write a new decision into work_memory + decision_chains (with reasoning, topic_key, supersedes links) |
 | `search_web` | Web search via local search server |
 
 <br>
@@ -152,7 +156,15 @@ Each query is decomposed into signals (identifier ratio, causal keywords, struct
 score(backend, query) = 0.5 · similarity + 0.4 · feature_fit + 0.1 · recency_prior
 ```
 
-The highest-scoring backend is selected. If the top two scores are within ε=0.15, a parallel search with reranking is triggered instead of picking blindly.
+The highest-scoring backend is selected. If the top two scores are within ε=0.15, a parallel search with reranking is triggered instead of picking blindly. Queries with causal keywords ("why", "decision", "changed from") automatically score higher against the `decision_chains` backend.
+
+### Causal decision chains
+
+Every decision written via `remember_decision` is stored as a node in a directed graph: each node carries `supersedes` (previous decision IDs it replaced) and `caused_by` (decisions that led to this one). The `trace_decision_chain` tool walks both directions — forward to see what replaced a decision, backward to see why it was made — returning the full causal history in chronological order.
+
+When you ask "why was X built this way?", the router detects causal keywords and searches the decision_chains collection. Results include not just the matching decision but its entire chain: the original rationale, every replacement with reasoning, and the current active node. This turns architectural archaeology from a chat-log dig into a structured graph traversal.
+
+Decisions are also dual-written to `work_memory` for backward compatibility, and reverse links (`superseded_by`) are auto-updated when a new decision supersedes an old one.
 
 ### Prune & Summarize (§2.5)
 
@@ -176,7 +188,7 @@ FocusMemory/
 │   ├── AGENTS.md             # Hard Gate search protocol rules
 │   └── README.md             # Installation & usage guide
 └── work-memory-mcp/          # MCP server (core)
-    ├── index.js              # MCP stdio + Hono HTTP — 7 tools, /v1/context/search endpoint
+    ├── index.js              # MCP stdio + Hono HTTP — 8 tools, /v1/context/search endpoint
     ├── init.js               # Workspace initializer (creates docs/, plans/, .focusmemoryignore)
     ├── createCollection.js   # Initialize Qdrant collections & payload indexes
     ├── buildGraph.js         # tree-sitter JS + regex TS/PHP → function nodes + call edges
