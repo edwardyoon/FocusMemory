@@ -103,7 +103,7 @@ server.registerTool(
   {
     title: "Search Memory (Unified)",
     description:
-      "Intelligently route a query to the best memory backend. Analyzes the query and searches work_memory, project_facts, graph, or any combination — no need to pick manually.",
+      "**ALWAYS call this FIRST before any other tool** (except direct file I/O requests). Intelligently routes a query to the best memory backend — work_memory, project_facts, graph, decision_chains, or any combination. This is the mandatory first step for all tasks: past decisions, architecture knowledge, bug history, code patterns. Only skip for trivial 'read/write this file' requests.",
     inputSchema: {
       query: z.string().describe("Natural language question about the project"),
       limit: z.number().optional().default(5),
