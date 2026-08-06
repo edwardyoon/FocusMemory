@@ -143,7 +143,7 @@ See [`qwen-code-extension/`](qwen-code-extension/) for installation instructions
 
 | Tool | Purpose |
 |---|---|
-| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph, code_chunks, and decision_chains + BONSAI prune & summarize |
+| `search_memory` | **Unified** — scoring-based routing across work_memory, project_facts, graph, code_chunks, and decision_chains + SUMMARY_LLM prune & summarize |
 | `trace_decision_chain` | **Causal Decision Chain** — trace the full history of a decision: what superseded it, why, and what came after (query or decision_id) |
 | `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
 | `search_project_facts` | DB schemas, infra topology, API specs (direct) |
@@ -178,7 +178,7 @@ Decisions are also dual-written to `work_memory` for backward compatibility, and
 
 ### Prune & Summarize (§2.5)
 
-Raw vector search returns top-N results, but 80% may be irrelevant noise. Before injecting context into the agent's prompt, a lightweight local LLM (BONSAI — Qwen 2.5, Gemma, etc.) compresses the raw results into core facts that directly answer the query. If BONSAI is unavailable, results are returned unpruned with zero downtime.
+Raw vector search returns top-N results, but 80% may be irrelevant noise. Before injecting context into the agent's prompt, a lightweight local LLM (SUMMARY_LLM — Qwen 2.5, Gemma, etc.) compresses the raw results into core facts that directly answer the query. If SUMMARY_LLM is unavailable, results are returned unpruned with zero downtime.
 
 ### Semantic code search
 

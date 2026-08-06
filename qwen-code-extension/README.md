@@ -2,7 +2,7 @@
 
 **Grep finds code. Vectors find meaning. I remember why.**
 
-This extension connects [FocusMemory](https://github.com/edwardyoon/FocusMemory) — a Qdrant-based memory backend with BONSAI prune & summarize — to **[qwen-code](https://github.com/QwenLM/qwen-code)** via its native Extension system. Zero upstream modifications required.
+This extension connects [FocusMemory](https://github.com/edwardyoon/FocusMemory) — a Qdrant-based memory backend with SUMMARY_LLM prune & summarize — to **[qwen-code](https://github.com/QwenLM/qwen-code)** via its native Extension system. Zero upstream modifications required.
 
 ---
 
@@ -12,7 +12,7 @@ It gives qwen-code six MCP tools and an auto-recall HTTP hook, all wired through
 
 | Tool | Purpose |
 |------|---------|
-| `search_memory` | Unified routing — scoring-based backend selection + parallel rerank + BONSAI prune & summarize |
+| `search_memory` | Unified routing — scoring-based backend selection + parallel rerank + SUMMARY_LLM prune & summarize |
 | `query_graph` | Code graph queries — "who calls X?", "functions in file Y" |
 | `remember_decision` | Decision/fact write-back to Qdrant (automatic or manual) |
 | `search_work_memory` | Past work history, resolved issues, open todos (direct) |
@@ -48,7 +48,7 @@ User prompt submitted
 [Auto-recall] UserPromptSubmit HTTP Hook fires
   → POST http://localhost:3900/v1/context/search
   → FocusMemory searches Qdrant (work_memory + project_facts)
-  → BONSAI prunes & summarizes results (~400 tokens)
+  → SUMMARY_LLM prunes & summarizes results (~400 tokens)
   → additionalContext injected into agent context
   │
   ▼
@@ -149,13 +149,13 @@ cd /path/to/FocusMemory/work-memory-mcp
 
 QDRANT_URL=http://localhost:6333 \
   BGE_URL=http://localhost:8080/v1/embeddings \
-  BONSAI_URL=http://localhost:8081/v1/chat/completions \
+  SUMMARY_LLM_URL=http://localhost:8081/v1/chat/completions \
   HTTP_PORT=3900 \
   CONTEXT_API_TOKEN=focus-memory-local \
   node index.js &
 ```
 
-`BONSAI_URL` points to a lightweight LLM for prune & summarize. If unavailable, the server falls back gracefully to raw results.
+`SUMMARY_LLM_URL` points to a lightweight LLM for prune & summarize. If unavailable, the server falls back gracefully to raw results.
 
 ### 5. Enable the extension
 
@@ -234,5 +234,5 @@ That's it. Every prompt triggers an auto-recall HTTP hook (context injected befo
 
 | Project | Role | Link |
 |---------|------|------|
-| **FocusMemory** | Memory backend — MCP server, Qdrant indexing, BONSAI pruning | [github.com/edwardyoon/FocusMemory](https://github.com/edwardyoon/FocusMemory) |
+| **FocusMemory** | Memory backend — MCP server, Qdrant indexing, SUMMARY_LLM pruning | [github.com/edwardyoon/FocusMemory](https://github.com/edwardyoon/FocusMemory) |
 | **qwen-code** | Upstream agent runtime (no modifications needed) | [github.com/QwenLM/qwen-code](https://github.com/QwenLM/qwen-code) |
