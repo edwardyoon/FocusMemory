@@ -109,15 +109,15 @@ npm start
 
 Configure your client (Qwen Code, Kilo Code) to connect via stdio transport and you get eight tools available in the agent loop.
 
-### 6. Enable extension in VS Code IDE (CLI는 불필요)
+### 6. Enable extension in VS Code IDE (not needed for CLI)
 
-VS Code IDE에서 Qwen Code를 사용할 경우, `extension-enablement.json`에 명시적으로 활성화해야 AGENTS.md Hard Gate가 작동합니다:
+If you're using Qwen Code inside VS Code IDE, you need to explicitly enable the extension in `extension-enablement.json` for the AGENTS.md Hard Gate to work:
 
 ```bash
 echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
 ```
 
-CLI 모드에서는 extension이 자동으로 로드되므로 이 단계가 필요 없습니다. 하지만 VS Code IDE에서 설정하지 않으면 `search_memory` 등 MCP 도구가 system prompt에 인젝션되지 않아 Hard Gate가 비활성화됩니다.
+This step isn't needed in CLI mode, where the extension loads automatically. But without it in VS Code IDE, MCP tools like `search_memory` won't get injected into the system prompt, and the Hard Gate stays disabled.
 
 <br>
 
