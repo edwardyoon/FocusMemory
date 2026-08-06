@@ -1,3 +1,5 @@
+import dotenv from "dotenv";
+dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드
 import { QdrantClient } from "@qdrant/js-client-rest";
 import fetch from "node-fetch";
 import fs from "fs/promises";
