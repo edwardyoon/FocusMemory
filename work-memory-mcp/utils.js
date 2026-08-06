@@ -6,8 +6,8 @@ import path from "path";
 const QWEN_URL = process.env.QWEN_URL || "http://127.0.0.1:8080/v1/chat/completions";
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
-const BONSAI_URL = process.env.BONSAI_URL || "http://127.0.0.1:8081/v1/chat/completions";
-const BONSAI_MODEL = process.env.BONSAI_MODEL || "bonsai-27b";
+const SUMMARY_LLM_URL = process.env.SUMMARY_LLM_URL || "http://127.0.0.1:8081/v1/chat/completions";
+const SUMMARY_LLM_MODEL = process.env.SUMMARY_LLM_MODEL || "summary-27b";
 
 export const qdrant = new QdrantClient({ url: QDRANT_URL });
 
@@ -261,11 +261,11 @@ export async function deletePointsByDoc(collection, sourceDoc) {
   });
 }
 
-// ─── Decision Chains — topic key inference via BONSAI ──────────────
+// ─── Decision Chains — topic key inference via SUMMARY_LLM ──────────────
 
 /**
  * Infer a topic_key for a new decision by comparing against existing topics.
- * Uses embedding similarity first (threshold 0.75), then falls back to BONSAI classification.
+ * Uses embedding similarity first (threshold 0.75), then falls back to SUMMARY_LLM classification.
  */
 export async function inferTopicKey(content) {
   // Step 1: scroll recent topic_keys from decision_chains
@@ -312,7 +312,7 @@ export async function inferTopicKey(content) {
     }
   }
 
-  // Step 3: BONSAI classification fallback
+  // Step 3: SUMMARY_LLM classification fallback
   const topicList = uniqueTopics.slice(0, 20).join(", ");
   const prompt = `아래 결정 내용을 가장 잘 설명하는 주제(topic)를 선택하거나 새 주제를 제안하세요.
 
@@ -322,11 +322,11 @@ export async function inferTopicKey(content) {
 기존 주제 중 하나와 일치하면 그 이름만, 아니면 새로운 짧은 키워드(2~4단어, snake_case)로 답하세요.`;
 
   try {
-    const res = await fetch(BONSAI_URL, {
+    const res = await fetch(SUMMARY_LLM_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: BONSAI_MODEL,
+        model: SUMMARY_LLM_MODEL,
         prompt: prompt,
         temperature: 0.1,
         max_tokens: 64,
@@ -341,7 +341,7 @@ export async function inferTopicKey(content) {
       }
     }
   } catch {
-    // BONSAI unavailable — fallback to simple extraction
+    // SUMMARY_LLM unavailable — fallback to simple extraction
   }
 
   const fileMatch = content.match(/[\w.\/-]+\.\w{2,4}/);
@@ -390,7 +390,7 @@ function formatRawResult(r, collection) {
 /**
  * Search result fragments를 Query 관점에서 필요한 내용만 추출/압축 (Self-Editing).
  *
- * Raw Qdrant 결과(top N~15개)를 BONSAI 경량 LLM에 전달하여:
+ * Raw Qdrant 결과(top N~15개)를 SUMMARY_LLM 경량 LLM에 전달하여:
  * - 질문과 직접 관련된 핵심 팩트만 남기고 요약
  * - 무관하거나 중복된内容是 완전히 제거(Prune)
  * - 실패 시 원본 raw 포맷으로 graceful fallback
@@ -422,11 +422,11 @@ ${formatted}
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
 
-    const res = await fetch(BONSAI_URL, {
+    const res = await fetch(SUMMARY_LLM_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: BONSAI_MODEL,
+        model: SUMMARY_LLM_MODEL,
         prompt: prompt,
         temperature: 0.1,
         max_tokens: 2048,
@@ -438,7 +438,7 @@ ${formatted}
     clearTimeout(timeout);
 
     if (res.status !== 200) {
-      console.error(`[pruneAndSummarize] BONSAI HTTP ${res.status}, falling back`);
+      console.error(`[pruneAndSummarize] SUMMARY_LLM HTTP ${res.status}, falling back`);
       return null;
     }
 

@@ -126,7 +126,7 @@ server.registerTool(
     let allResults = [];
     let chainOutput = null;
 
-    // Decision chains: causal query → trace full chain (no BONSAI summary)
+    // Decision chains: causal query → trace full chain (no SUMMARY_LLM summary)
     if (chainTarget === "decision_chains") {
       const vector = await embed(query);
       if (vector) {
@@ -510,7 +510,7 @@ server.registerTool(
   {
     title: "Trace Decision Chain",
     description:
-      "Reconstruct the full causal chain of decisions for a given topic or decision ID. Returns the timeline of how and why decisions evolved (no BONSAI summarization — structure preserved as-is).",
+      "Reconstruct the full causal chain of decisions for a given topic or decision ID. Returns the timeline of how and why decisions evolved (no SUMMARY_LLM summarization — structure preserved as-is).",
     inputSchema: {
       query: z.string().optional().default("").describe("Natural language query, e.g. 'discount_threshold logic'"),
       decision_id: z.string().optional().default("").describe("Start from a specific decision ID (alternative to query)"),
@@ -566,7 +566,7 @@ server.registerTool(
     if (direction !== "forward") await walkBackward(anchor);
     if (direction !== "backward") await walkForward(anchor);
 
-    // Format output — preserve structure, no BONSAI summary
+    // Format output — preserve structure, no SUMMARY_LLM summary
     const topicKey = chain[0]?.payload?.topic_key || "(unknown)";
     let output = `${topicKey} chain (${chain.length} step${chain.length > 1 ? "s" : ""}):\n\n`;
 
@@ -1009,7 +1009,7 @@ httpApp.post("/v1/context/search", async (c) => {
     return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
   }
 
-  // BONSAI prune & summarize (graceful fallback)
+  // SUMMARY_LLM prune & summarize (graceful fallback)
   let prunedSummary = null;
   try {
     prunedSummary = await pruneAndSummarize(query, allResults);
