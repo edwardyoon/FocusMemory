@@ -8,7 +8,7 @@ import fetch, { Request as NodeRequest } from "node-fetch";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createWriteStream } from "fs";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey } from "./utils.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 
@@ -65,6 +65,11 @@ function rerankMerged(allResults) {
       } else if (r.payload.ingested_at) {
         const ageDays = (now - new Date(r.payload.ingested_at).getTime()) / DAY_MS;
         recencyScore = Math.exp(-ageDays / 60); // slower decay for docs
+      }
+
+      // Superseded decisions get a hard penalty — outdated but not deleted
+      if (r.payload.status === "superseded") {
+        recencyScore *= 0.15;
       }
 
       // α=0.7: cosine score dominates, recency is a tiebreaker
@@ -469,6 +474,52 @@ server.registerTool(
     const chainContent = `${summary_text}${reasoning ? "\n" + reasoning : ""}`;
     const chainVector = await embed(chainContent);
 
+    // Auto-supersede detection: if no explicit supersedes, check for active nodes with same topic_key
+    let effectiveSupersedes = supersedes || null;
+    if (!supersedes && chainVector) {
+      try {
+        const activeNodes = await qdrant.scroll("decision_chains", {
+          filter: {
+            must: [
+              { key: "topic_key", match: { value: resolvedTopic } },
+              { key: "status", match: { value: "active" } },
+            ],
+          },
+          limit: 10,
+          with_payload: ["content", "decision_id"],
+        });
+
+        if (activeNodes.points.length === 1) {
+          // Single active node — compute similarity to decide auto-supersede
+          const existingContent = activeNodes.points[0].payload.content || "";
+          const existingVector = await embed(existingContent);
+          if (existingVector && cosineSimilarity(chainVector, existingVector) >= 0.8) {
+            effectiveSupersedes = activeNodes.points[0].payload.decision_id;
+            log(`[auto-supersede] topic=${resolvedTopic}, similarity=${cosineSimilarity(chainVector, existingVector).toFixed(3)}, superseding ${effectiveSupersedes}`);
+          }
+        } else if (activeNodes.points.length > 1) {
+          // Multiple active nodes — find the highest-similarity candidate
+          let bestSim = 0;
+          let bestId = null;
+          for (const pt of activeNodes.points) {
+            const ec = pt.payload.content || "";
+            const ev = await embed(ec);
+            if (ev) {
+              const sim = cosineSimilarity(chainVector, ev);
+              if (sim > bestSim) { bestSim = sim; bestId = pt.payload.decision_id; }
+            }
+          }
+          // Require higher threshold when multiple candidates exist
+          if (bestSim >= 0.85) {
+            effectiveSupersedes = bestId;
+            log(`[auto-supersede] topic=${resolvedTopic}, similarity=${bestSim.toFixed(3)}, superseding ${bestId} among ${activeNodes.points.length} active`);
+          }
+        }
+      } catch (err) {
+        log(`[auto-supersede] scroll failed: ${err.message}`);
+      }
+    }
+
     if (chainVector) {
       await qdrant.upsert("decision_chains", {
         points: [
@@ -479,7 +530,7 @@ server.registerTool(
               decision_id,
               content: summary_text,
               reasoning: reasoning || "",
-              supersedes: supersedes || null,
+              supersedes: effectiveSupersedes,
               superseded_by: null,
               caused_by,
               topic_key: resolvedTopic,
@@ -493,15 +544,16 @@ server.registerTool(
       });
 
       // Update superseded decision — reverse link + status change
-      if (supersedes) {
+      if (effectiveSupersedes) {
         await qdrant.setPayload("decision_chains", {
-          points: [supersedes],
+          points: [effectiveSupersedes],
           payload: { superseded_by: decision_id, status: "superseded" },
         });
       }
     }
 
-    return { content: [{ type: "text", text: `Saved successfully. decision_id: ${decision_id}, topic_key: ${resolvedTopic}` }] };
+    const autoNote = effectiveSupersedes && !supersedes ? ` (auto-superseded ${effectiveSupersedes.slice(0, 8)})` : "";
+    return { content: [{ type: "text", text: `Saved successfully. decision_id: ${decision_id}, topic_key: ${resolvedTopic}${autoNote}` }] };
   }
 );
 

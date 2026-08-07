@@ -19,5 +19,8 @@
 
 ## Write-back Rules (remember_decision)
 - Do not save on every file edit.
-- Save once after the full task completes or after tests pass.
+- **Trigger: call `remember_decision` once after a task completes** — specifically when tests pass, a feature is delivered, or a bug root cause is identified and fixed.
 - What to save: key decisions, bug root causes and fixes, architecture changes.
+- Always include `reasoning` (why this decision was made) — it's what makes causal chains useful.
+- Leave `topic_key` empty for auto-inference; the server matches against existing topics via embedding similarity.
+- If a new decision replaces an older approach on the same topic, **omit `supersedes`** — auto-supersede detection will find and link the prior active node via topic_key + embedding similarity (threshold ≥ 0.8).
