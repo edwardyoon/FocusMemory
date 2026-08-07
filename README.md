@@ -27,6 +27,30 @@ FocusMemory gives your AI coding agent persistent memory: **causal decision chai
 
 ---
 
+## Lifecycle
+
+FocusMemory moves through the same loop on every query:
+
+| Stage | What happens | Status |
+|---|---|---|
+| **Ingest** | Docs, plans, and code get chunked (LLM for docs, tree-sitter for JS), embedded with BGE-M3, and upserted to Qdrant. Incremental via mtime/SHA-256 state tracking (`autoIngest.js`, cron-safe). | ✅ implemented |
+| **Route** | Each query is decomposed into signals (causal, temporal, structural, identifier ratio). A scoring function ranks all backends; the winner executes alone, or a parallel search + rerank fires if top-two scores are within ε=0.15 (`utils.js` `routeQuery()`). | ✅ implemented |
+| **Recall** | The winning backend(s) run the search — vector cosine for work_memory/project_facts/decision_chains, keyword payload scroll for graph. Results are merged and reranked with recency decay (`index.js` `search_memory`). | ✅ implemented |
+| **Prune** | A local LLM (SUMMARY_LLM — Qwen 2.5 / Gemma) strips noise from raw top-N results before anything reaches the agent prompt. Compresses 10~15 raw hits into core facts. Graceful fallback to raw output if SUMMARY_LLM is unavailable (`utils.js` `pruneAndSummarize()`). | ✅ implemented |
+| **Commit** | New decisions are written into both `work_memory` and `decision_chains` as linked nodes with `topic_key`, `reasoning`, and `file_paths`. Topic key is auto-inferred via embedding similarity against existing topics, with LLM classification fallback (`index.js` `remember_decision`). | ✅ implemented |
+| **Supersede** | When a new decision shares a topic_key with an active node, embedding similarity is computed automatically. Single candidate ≥ 0.8 or best-of-many ≥ 0.85 triggers auto-supersede — old node gets `status: "superseded"` and linked forward via `superseded_by`. Explicit `supersedes` param still supported for manual override (`index.js` `remember_decision`). | ✅ implemented |
+| **Trace** | Walk the causal chain in either direction — backward via `supersedes`, forward via `superseded_by` — returning full chronological history with reasoning. No LLM summarization; structure preserved as-is (`index.js` `trace_decision_chain`). | ✅ implemented |
+
+Grep can't do any of this. It doesn't route, it doesn't prune, and it has no idea what superseded what.
+
+### Remaining improvement
+
+1. **Auto-commit via session end hook** — The Qwen Code extension's HTTP hook could detect when a coding task completes (tests pass, PR merged) and auto-extract decisions from the chat transcript. A lightweight LLM prompt summarizes key decisions, infers `topic_key`, and calls `remember_decision` without agent intervention. Currently the Hard Gate in AGENTS.md instructs agents to call `remember_decision` manually at task end; full automation awaits transcript access from the ACP host.
+
+<br>
+
+---
+
 ## What it does
 
 | Capability | How |

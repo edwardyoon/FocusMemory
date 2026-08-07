@@ -351,7 +351,7 @@ export async function inferTopicKey(content) {
 }
 
 /** Compute cosine similarity between two vectors */
-function cosineSimilarity(a, b) {
+export function cosineSimilarity(a, b) {
   let dot = 0;
   let normA = 0;
   let normB = 0;
