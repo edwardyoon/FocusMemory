@@ -347,9 +347,11 @@ export async function pruneAndSummarize(query, results) {
     return `[${i + 1}] (${col})\n${formatRawResult(r, col)}`;
   }).join("\n\n");
 
-  const prompt = `너는 검색 컨텍스트 편집자다.
-[사용자 질문]에 답하는 데 **직접적으로 필요한 핵심 팩트**만 검색 결과에서 추출하여 압축 요약하라.
-질문과 관련 없거나 중복되는 내용은 완전히 제거(Prune)해라.
+  const hasDocsResults = results.some(r => r._collection === "meili" && (r.payload?.source === "docs"));
+
+  const prompt = `너는 사용자의 질문에 직접 답하는 기술 문서 작성가다.
+[검색된 결과 파편들]을 근거로 [사용자 질문]에 대한 **완전한 답변**을 합성(Synthesize)하여 작성하라.
+단순히 사실을 나열하지 말고, 논리적인 흐름으로 조직된 하나의 답변을 구성하라.
 
 [사용자 질문]: ${query}
 
@@ -357,10 +359,12 @@ export async function pruneAndSummarize(query, results) {
 ${formatted}
 
 [출력 규칙]:
-- 핵심 팩트 위주의 요약된 텍스트만 출력할 것.
-- 불필요한 서론/인사말 금지.
-- 원본의 파일 경로, 함수명, 컬럼명 등 구체적 사실은 절대 누락하지 말 것.
-- 여러 소스가 같은 사실을 언급하면 하나로 병합할 것.`;
+- 사용자 질문에 직접 답하는 형태로 작성할 것 (서론/인사말 금지).
+- 검색 결과를 근거로 사용하여 논리적인 흐름으로 조직할 것.
+- 파일 경로, 함수명, 컬럼명 등 구체적 사실은 정확히 포함할 것.
+- 여러 소스가 같은 사실을 언급하면 하나로 병합하고 출처는 명시하지 말 것.
+- 질문과 무관한 내용은 완전히 제외할 것.
+- 검색 결과에 답이 없으면 "해당 주제에 대한 충분한 정보가 없습니다"라고만 출력할 것.`;
 
   try {
     const controller = new AbortController();
@@ -374,7 +378,7 @@ ${formatted}
         model: SUMMARY_LLM_MODEL,
         prompt: prompt,
         temperature: 0.1,
-        max_tokens: 2048,
+        max_tokens: hasDocsResults ? 3072 : 2048,
         enable_thinking: false,
       }),
       signal: controller.signal,
@@ -478,6 +482,8 @@ export function extractQueryFeatures(query) {
   const koreanCausal = new Set(["왜", "이유", "근거", "결정", "바꾼", "대체", "전환"]);
   const koreanStructural = new Set(["호출", "의존", "연결"]);
   const koreanTemporal = new Set(["최근", "언제", "마지막", "변경"]);
+  // P6: Knowledge/architecture signals — system overview, structure explanation, pattern documentation
+  const koreanKnowledge = new Set(["구조", "아키텍처", "시스템", "구성", "패턴", "방식", "방법", "규칙", "정책", "설계"]);
 
   return {
     /** Ratio of code-identifier-like tokens to total tokens */
@@ -488,6 +494,8 @@ export function extractQueryFeatures(query) {
     is_structural: /\b(calls?|caller|depends?\s+on|uses?|connected\s+to)\b/.test(lower) || [...koreanStructural].some((w) => query.includes(w)),
     /** Temporal signals: when, latest, version, recent, 최근, 언제, 마지막, 변경 */
     is_temporal: /\b(when|latest|version|recent|changed)\b/.test(lower) || [...koreanTemporal].some((w) => query.includes(w)),
+    /** P6: Knowledge/architecture signals — should prioritize docs (project_facts) over code */
+    is_knowledge: /\b(architecture|overview|design|pattern|policy|guide|structure|how\s+it\s+works)\b/i.test(lower) || [...koreanKnowledge].some((w) => query.includes(w)),
   };
 }
 

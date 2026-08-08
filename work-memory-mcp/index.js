@@ -237,6 +237,9 @@ server.registerTool(
     let allResults = [];
     let chainOutput = null;
 
+    // ── P6: Knowledge/architecture queries → docs FIRST, then code fallback ──
+    const isKnowledgeQuery = features.is_knowledge || (features.identifier_ratio < 0.1 && !features.is_causal && !features.is_structural);
+
     // Decision chains: causal query → trace full chain (no SUMMARY_LLM summary)
     if (chainTarget === "decision_chains") {
       const vector = await embed(query);
@@ -248,7 +251,14 @@ server.registerTool(
       }
     }
 
-    if (vectorTargets.length > 0) {
+    // P6: For knowledge queries, search Meilisearch docs first with expanded limit
+    let meiliDocsResults = [];
+    if (isKnowledgeQuery) {
+      meiliDocsResults = await searchMeili(query, { source: "docs", limit: Math.max(limit * 3, 10) }).catch(() => []);
+      log(`[MCP search_memory] knowledge query → docs first, hits=${meiliDocsResults.length}`);
+    }
+
+    if (vectorTargets.length > 0 || !isKnowledgeQuery) {
       // Fetch more raw results for pruning — the LLM will compress them down
       const perCollectionLimit = Math.max(limit * 2, 10);
 
@@ -264,9 +274,11 @@ server.registerTool(
         return results.map((r) => ({ ...r, _collection: col }));
       });
 
-      // Also search Meilisearch for docs/plans text matches (탐색구간도 포함)
-      const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
-      searches.push(meiliSearch);
+      // Also search Meilisearch for docs/plans text matches (skip if already done as primary for knowledge queries)
+      if (!isKnowledgeQuery || meiliDocsResults.length === 0) {
+        const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
+        searches.push(meiliSearch);
+      }
 
       // P1: Cross-reference code_structure index — find relevant code files in one call
       const structSearch = searchCodeStructure(query, { limit: Math.min(perCollectionLimit, 8) })
@@ -287,6 +299,11 @@ server.registerTool(
 
       const batches = await Promise.all(searches);
       allResults.push(...batches.flat());
+    }
+
+    // P6: prepend docs results for knowledge queries (they take priority)
+    if (isKnowledgeQuery && meiliDocsResults.length > 0) {
+      allResults = [...meiliDocsResults, ...allResults];
     }
 
     // Graph backend: keyword-only scroll (§1.4 — no embedding needed)
@@ -349,6 +366,13 @@ server.registerTool(
       }
     }
 
+    // ── P7: Deduplicate results by entity name / source_doc ──
+    const beforeDedup = allResults.length;
+    allResults = deduplicateResults(allResults);
+    if (allResults.length < beforeDedup) {
+      log(`[MCP search_memory] P7 dedup: ${beforeDedup} → ${allResults.length}`);
+    }
+
     // Build output with routing explanation
     const scoreStr = Object.entries(route.scores)
       .map(([b, s]) => `${b}=${s.toFixed(3)}`)
@@ -389,6 +413,59 @@ server.registerTool(
     return { content: [{ type: "text", text: output }] };
   }
 );
+
+/**
+ * P7: Deduplicate results by entity name or source_doc.
+ * Groups results by a stable key (entity_name, summary_text, source_doc), keeping top-2 per group
+ * with file diversity (prefer different files within the same group).
+ */
+function deduplicateResults(results) {
+  if (!results || results.length <= 1) return results;
+
+  const groups = new Map();
+
+  for (const r of results) {
+    const p = r.payload || {};
+    // Build a dedup key: entity_name > summary_text > source_doc filename
+    let key = null;
+    if (p.entity_name || p.name) {
+      key = `entity:${(p.entity_name || p.name).toLowerCase()}`;
+    } else if (p.summary_text && p.summary_text.length > 2) {
+      key = `summary:${p.summary_text.toLowerCase().slice(0, 80)}`;
+    } else if (p.source_doc) {
+      const basename = p.source_doc.split("/").pop();
+      key = `doc:${basename?.toLowerCase() || p.source_doc.toLowerCase()}`;
+    }
+
+    if (!key) continue;
+
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r);
+  }
+
+  const deduped = [];
+  for (const [key, items] of groups) {
+    if (items.length === 1) {
+      deduped.push(items[0]);
+      continue;
+    }
+
+    // Keep top-2 with file diversity
+    const seenFiles = new Set();
+    for (const item of items) {
+      const p = item.payload || {};
+      const fileKey = p.source_doc || p.file_path || "";
+      if (seenFiles.size < 2 && (!fileKey || !seenFiles.has(fileKey))) {
+        deduped.push(item);
+        if (fileKey) seenFiles.add(fileKey);
+      }
+    }
+  }
+
+  // Re-sort by score descending to preserve ranking
+  deduped.sort((a, b) => (b.score || 0) - (a.score || 0));
+  return deduped;
+}
 
 /**
  * Search the graph backend using keyword payload filters.
