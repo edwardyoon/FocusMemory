@@ -279,6 +279,32 @@ async function main() {
     console.log("");
   }
 
+  // ── Code structure indexing (Meilisearch — 파일 메타데이터) ─────
+  console.log("--- Indexing code structure ---");
+
+  const structScript = path.join(path.dirname(new URL(import.meta.url).pathname), "indexCodeStructure.js");
+  const structArgs = [structScript];
+  if (process.env.GRAPH_ROOT) {
+    structArgs.push(process.env.GRAPH_ROOT);
+  }
+  if (forceAll) {
+    structArgs.push("--force");
+  }
+
+  await new Promise((resolve, reject) => {
+    const child = spawn("node", structArgs, {
+      env: process.env,
+      stdio: "inherit",
+    });
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`indexCodeStructure exited with code ${code}`));
+    });
+    child.on("error", reject);
+  });
+
+  console.log("");
+
   // ── Code chunk indexing (incremental, unless --force) ─────────
   console.log("--- Indexing code chunks ---");
 

@@ -11,6 +11,8 @@
     "build-graph": "node buildGraph.js",
     "index-chunks": "node semantic_codesearch/indexCodeChunks.js",
     "index-chunks:force": "node semantic_codesearch/indexCodeChunks.js --force",
+    "index-structure": "node indexCodeStructure.js",
+    "index-structure:force": "node indexCodeStructure.js --force",
     "search": "node testSearch.js"
   },
   "keywords": [

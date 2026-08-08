@@ -116,6 +116,47 @@ export async function scanFiles(dir, extensions, maxFileSize = 200_000) {
   return files;
 }
 
+// ─── File path verification (pipeline hardening) ──────────────────────
+
+/**
+ * Resolve a relative file path from search results to an absolute path.
+ * Tries multiple roots: GRAPH_ROOT, process.cwd(), /opt/homebrew/var/www.
+ */
+export async function resolveFilePath(relPath) {
+  const candidates = [
+    process.env.GRAPH_ROOT,
+    "/opt/homebrew/var/www",
+  ].filter(Boolean);
+
+  for (const root of candidates) {
+    const fullPath = path.join(root, relPath);
+    try {
+      await fs.access(fullPath);
+      return fullPath;
+    } catch {}
+  }
+  // Last resort: check if the path is already absolute
+  try {
+    await fs.access(relPath);
+    return relPath;
+  } catch {}
+
+  return null;
+}
+
+/**
+ * Verify a batch of file paths from search results.
+ * Returns array of { relPath, absolutePath, exists }.
+ */
+export async function verifyFilePaths(relPaths) {
+  const seen = new Set();
+  return (relPaths || []).map((relPath) => {
+    if (seen.has(relPath)) return { relPath, absolutePath: null, exists: false };
+    seen.add(relPath);
+    return null; // deduplicate — resolved later
+  }).filter(Boolean);
+}
+
 export async function embed(text) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30000);

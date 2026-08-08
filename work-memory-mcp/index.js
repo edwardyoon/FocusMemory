@@ -9,7 +9,7 @@ import fetch, { Request as NodeRequest } from "node-fetch";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
 import { createWriteStream } from "fs";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity } from "./utils.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7701";
@@ -38,6 +38,46 @@ let meiliIndex = null;
 if (MEILI_MASTER_KEY) {
   const meiliClient = new Meilisearch({ host: MEILI_HOST, apiKey: MEILI_MASTER_KEY });
   meiliIndex = meiliClient.index(MEILI_INDEX);
+}
+
+// Meilisearch client for code structure search
+const MEILI_CODE_STRUCTURE_INDEX = process.env.MEILI_CODE_STRUCTURE_INDEX || "code_structure";
+let meiliCodeStructureIndex = null;
+if (MEILI_MASTER_KEY) {
+  const meiliClientForStruct = new Meilisearch({ host: MEILI_HOST, apiKey: MEILI_MASTER_KEY });
+  meiliCodeStructureIndex = meiliClientForStruct.index(MEILI_CODE_STRUCTURE_INDEX);
+}
+
+/**
+ * Search code structure via Meilisearch.
+ */
+async function searchCodeStructure(query, options = {}) {
+  if (!meiliCodeStructureIndex) return [];
+
+  const { language, limit = 10 } = options;
+  const filter = language ? `language = '${language}'` : null;
+
+  try {
+    const result = await meiliCodeStructureIndex.search(query, {
+      limit,
+      filter,
+      attributesToRetrieve: ["filepath", "filename", "dirname", "extension", "language", "entities", "entity_names", "imports", "line_count", "description"],
+    });
+
+    return result.hits.map((h) => ({
+      filepath: h.filepath,
+      filename: h.filename,
+      dirname: h.dirname,
+      language: h.language,
+      entity_names: h.entity_names || [],
+      entities: h.entities || [],
+      line_count: h.line_count,
+      description: h.description,
+    }));
+  } catch (err) {
+    log(`[searchCodeStructure] error: ${err.message}`);
+    return [];
+  }
 }
 
 /**
@@ -1015,6 +1055,57 @@ server.registerTool(
       }
       throw err;
     }
+  }
+);
+
+// --- Tool 7: file structure search (Meilisearch code_structure index) ---
+server.registerTool(
+  "search_file_structure",
+  {
+    title: "Search File Structure",
+    description:
+      "Search code files by name, function names, imports, or keywords. Use when you need to find where a specific file lives, what functions a file contains, or which files reference a given module. Returns exact filepaths — use with read_file for content.",
+    inputSchema: {
+      query: z.string().describe("Search query: filename, function name, import keyword (e.g. 'redis', 'cache', 'connectRedis')"),
+      language: z.string().optional().describe("Language filter: javascript, typescript, php (optional)"),
+      limit: z.number().optional().default(10).describe("Max results (default 10, max 50)"),
+    },
+  },
+  async ({ query, language, limit }) => {
+    log(`[MCP search_file_structure] source=mcp, query="${query.slice(0, 80)}", lang=${language || "any"}, limit=${limit}`);
+
+    const results = await searchCodeStructure(query, { language, limit: Math.min(limit, 50) });
+
+    if (results.length === 0) {
+      return { content: [{ type: "text", text: `"${query}"과 일치하는 코드 파일을 찾을 수 없습니다. 먼저 'npm run index-structure'를 실행하여 구조 색인을 생성하세요.` }] };
+    }
+
+    // Verify file paths exist and resolve to absolute paths
+    const verified = await Promise.all(results.map(async (r) => ({
+      ...r,
+      absolutePath: await resolveFilePath(r.filepath),
+    })));
+
+    const formatted = verified.map((r, i) => {
+      let line = `#${i + 1} ${r.filepath}`;
+      if (r.absolutePath) {
+        line += `\n  abs: ${r.absolutePath}`;
+      } else {
+        line += " ⚠️ 파일 없음";
+      }
+      line += `\n  filename: ${r.filename} | language: ${r.language} | lines: ${r.line_count}\n`;
+      if (r.entity_names && r.entity_names.length > 0) {
+        line += `  entities: ${r.entity_names.slice(0, 12).join(", ")}${r.entity_names.length > 12 ? " ..." : ""}`;
+      }
+      if (r.description) {
+        line += `\n  desc: ${r.description.slice(0, 150)}`;
+      }
+      return line;
+    });
+
+    const text = `File structure search results for "${query}" (${results.length} matches):\n\n${formatted.join("\n\n")}`;
+    log(`[MCP search_file_structure] done, results=${results.length}`);
+    return { content: [{ type: "text", text }] };
   }
 );
 
