@@ -73,12 +73,6 @@ async function createPayloadIndexes() {
     field_schema: "keyword",
   });
   console.log("[indexed] work_memory: payload indexes created for project, status, type");
-
-  await qdrant.createPayloadIndex("project_facts", {
-    field_name: "source_doc",
-    field_schema: "keyword",
-  });
-  console.log("[indexed] project_facts: payload index created for source_doc");
 }
 
 async function createCodeChunksCollection() {
@@ -121,7 +115,6 @@ async function createDecisionChainsCollection() {
 async function main() {
   try {
     await createCollectionIfNotExists("work_memory");
-    await createCollectionIfNotExists("project_facts");
     await createPayloadIndexes();
     await createGraphCollections();
     await createCodeChunksCollection();

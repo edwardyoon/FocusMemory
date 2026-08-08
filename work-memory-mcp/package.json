@@ -1,13 +1,11 @@
 {
   "name": "@focusmemory/work-memory-mcp",
   "version": "0.1.0",
-  "description": "MCP server for FocusMemory — work history, decisions, project facts, and code graph backed by Qdrant",
+  "description": "MCP server for FocusMemory — work history, decisions (Qdrant), docs/plans text search (Meilisearch), and code graph",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "create-collections": "node createCollection.js",
-    "ingest-docs": "node ingestDocs.js",
-    "ingest-plans": "node ingestPlans.js",
     "auto-ingest": "node autoIngest.js",
     "auto-ingest:force": "node autoIngest.js --force",
     "build-graph": "node buildGraph.js",
@@ -30,6 +28,7 @@
     "@qdrant/js-client-rest": "^1.18.0",
     "dotenv": "^17.4.2",
     "hono": "^4.13.0",
+    "meilisearch": "^0.60.0",
     "mysql2": "^3.23.2",
     "node-fetch": "^3.3.2",
     "tree-sitter": "^0.25.1",

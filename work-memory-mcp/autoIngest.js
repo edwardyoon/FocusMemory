@@ -3,13 +3,30 @@ dotenv.config({ override: true }); // .env 최우선 — settings.json env 변�
 import fs from "fs/promises";
 import path from "path";
 import { spawn } from "child_process";
-import { qdrant, embed, chunkDocument, deletePointsByDoc, DOCS_SYSTEM_PROMPT, PLANS_SYSTEM_PROMPT } from "./utils.js";
+import { Meilisearch } from "meilisearch";
 
 const STATE_FILE = path.join(process.cwd(), "ingest_state.json");
 const DOCS_DIR = process.env.DOCS_DIR || path.join(process.cwd(), "..", "docs");
 const PLANS_DIR_ROOT = process.env.PLANS_DIR || path.join(process.cwd(), "..", "plans");
+const ROOT = path.resolve(DOCS_DIR, ".."); // www/ 루트
 
-// ─── State management ───────────────────────────────────────────────
+// ─── Meilisearch client ────────────────────────────────────────────
+
+const meiliClient = new Meilisearch({
+  host: process.env.MEILI_HOST || "http://localhost:7701",
+  apiKey: process.env.MEILI_MASTER_KEY || "",
+});
+const MEILI_INDEX = process.env.MEILI_INDEX || "docs_plans";
+
+async function getMeiliIndex() {
+  try {
+    return await meiliClient.getIndex(MEILI_INDEX);
+  } catch {
+    return await meiliClient.createIndex(MEILI_INDEX, { primaryKey: "uid" });
+  }
+}
+
+// ─── State management ──────────────────────────────────────────────
 
 async function loadState() {
   try {
@@ -30,17 +47,16 @@ function getFileKey(filePath, type) {
   return `${type}:${path.relative(type === "docs" ? DOCS_DIR : PLANS_DIR_ROOT, filePath)}`;
 }
 
-// ─── File scanning ──────────────────────────────────────────────────
+// ─── File scanning ────────────────────────────────────────────────
 
-async function scanDir(dir, pattern = "*.md") {
+async function scanDir(dir) {
   const files = [];
   try {
     const entries = await fs.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        // Recurse into subdirectories (e.g., plans/done/, docs/ui-design/)
-        const subFiles = await scanDir(fullPath, pattern);
+        const subFiles = await scanDir(fullPath);
         files.push(...subFiles);
       } else if (entry.isFile() && entry.name.endsWith(".md")) {
         files.push(fullPath);
@@ -57,127 +73,86 @@ async function getFileMtime(filePath) {
   return stat.mtime.toISOString();
 }
 
-// ─── Ingest logic (single file) ─────────────────────────────────────
+// ─── Meilisearch document parsing ────────────────────────────────
+
+function extractHeadings(content) {
+  const headings = [];
+  for (const line of content.split("\n")) {
+    const m = line.match(/^(#{1,6})\s+(.+)$/);
+    if (m) headings.push({ level: m[1].length, text: m[2].trim() });
+  }
+  return headings;
+}
+
+async function parseMdFile(filePath, source) {
+  const content = await fs.readFile(filePath, "utf-8");
+  const headings = extractHeadings(content);
+  const title = headings.length > 0 ? headings[0].text : path.basename(filePath, ".md");
+
+  // 코드 블록 제거 후 순수 텍스트 추출 (검색 품질 개선)
+  let textContent = content.replace(/```[\s\S]*?```/g, "");
+  textContent = textContent.replace(/^#{1,6}\s+.+$/gm, "");   // heading 제거
+  textContent = textContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // 링크 텍스트만 남김
+  textContent = textContent.replace(/[|_\`\*\~]/g, "");       // markdown 구문 정리
+  textContent = textContent.replace(/\n{2,}/g, "\n").trim();
+
+  const relPath = path.relative(ROOT, filePath);
+
+  // uid: 특수문자 제거 (Meilisearch document ID는 alphanumeric, hyphen, underscore만 허용)
+  const safeUid = `${source}_${relPath.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+
+  return {
+    uid: safeUid,
+    source,            // "docs" | "plans"
+    filepath: relPath,
+    title,
+    content: textContent,
+    headings: headings.map((h) => `H${h.level} ${h.text}`),
+  };
+}
+
+async function upsertToMeili(doc) {
+  const index = await getMeiliIndex();
+  await index.addDocuments([doc], { primaryKey: "uid" });
+}
+
+async function deleteFromMeili(uid) {
+  const index = await getMeiliIndex();
+  await index.deleteDocument(uid);
+}
+
+// ─── Ingest logic (single file → Meilisearch) ──────────────────────
+
+function computeUid(filePath, source) {
+  const relPath = path.relative(ROOT, filePath);
+  return `${source}_${relPath.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+}
 
 async function ingestDocFile(filePath) {
   const fileName = path.basename(filePath);
-  const docText = await fs.readFile(filePath, "utf-8");
 
-  console.log(`[docs] Processing: ${fileName} (${docText.length} chars)`);
+  console.log(`[docs] Processing: ${fileName}`);
 
-  await deletePointsByDoc("project_facts", fileName);
-  console.log(`  → deleted existing points for '${fileName}'`);
-
-  const chunks = await chunkDocument(docText, DOCS_SYSTEM_PROMPT);
-  if (chunks.length === 0) {
-    console.log("  → no chunks extracted, skipped\n");
-    return false;
-  }
-  console.log(`  → extracted ${chunks.length} chunks`);
-
-  const points = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const vector = await embed(chunk.content);
-    if (!vector) {
-      console.error(`    [skip] embedding failed for chunk ${i}`);
-      continue;
-    }
-    points.push({
-      id: crypto.randomUUID(),
-      vector,
-      payload: {
-        content: chunk.content,
-        section_title: chunk.section_title || "",
-        tags: chunk.tags || [],
-        source_doc: fileName,
-        ingested_at: new Date().toISOString(),
-      },
-    });
-  }
-
-  if (points.length > 0) {
-    await qdrant.upsert("project_facts", { points });
-    console.log(`  → saved ${points.length} points to project_facts\n`);
-  } else {
-    console.log("  → no points saved, skipped\n");
-  }
+  const doc = await parseMdFile(filePath, "docs");
+  await upsertToMeili(doc);
+  console.log(`  → upserted to Meilisearch (uid: ${doc.uid})\n`);
 
   return true;
-}
-
-function extractFilePaths(text) {
-  const patterns = [
-    /[`']([^`\']*\.js)[`']/g,
-    /[`']([^`\']*\.php)[`']/g,
-    /[`']([^`\']*\.css)[`']/g,
-    /[`']([^`\']*\.html)[`']/g,
-  ];
-  const files = new Set();
-  for (const pattern of patterns) {
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      files.add(match[1]);
-    }
-  }
-  return [...files];
 }
 
 async function ingestPlanFile(filePath) {
   const fileName = path.basename(filePath);
-  const docText = await fs.readFile(filePath, "utf-8");
-  const isDone = filePath.includes("/done/");
-  const sourceDoc = `${isDone ? 'done/' : ''}${fileName}`;
 
-  console.log(`[plans] Processing: ${sourceDoc} (${docText.length} chars)`);
+  console.log(`[plans] Processing: ${fileName}`);
 
-  await deletePointsByDoc("work_memory", sourceDoc);
-  console.log(`  → deleted existing points for '${sourceDoc}'`);
-
-  const chunks = await chunkDocument(docText, PLANS_SYSTEM_PROMPT);
-  if (chunks.length === 0) {
-    console.log("  → no chunks extracted, skipped\n");
-    return false;
-  }
-  console.log(`  → extracted ${chunks.length} chunks`);
-
-  const points = [];
-  for (let i = 0; i < chunks.length; i++) {
-    const chunk = chunks[i];
-    const vector = await embed(chunk.content);
-    if (!vector) {
-      console.error(`    [skip] embedding failed for chunk ${i}`);
-      continue;
-    }
-
-    const relatedFiles = extractFilePaths(docText);
-    points.push({
-      id: crypto.randomUUID(),
-      vector,
-      payload: {
-        type: "decision",
-        project: "",
-        summary_text: chunk.section_title || fileName,
-        detail: chunk.content,
-        related_files: relatedFiles,
-        status: isDone ? "resolved" : "open",
-        source_doc: sourceDoc,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  }
-
-  if (points.length > 0) {
-    await qdrant.upsert("work_memory", { points });
-    console.log(`  → saved ${points.length} points to work_memory\n`);
-  } else {
-    console.log("  → no points saved, skipped\n");
-  }
+  const doc = await parseMdFile(filePath, "plans");
+  await upsertToMeili(doc);
+  console.log(`  → upserted to Meilisearch (uid: ${doc.uid})\n`);
 
   return true;
 }
 
-// ─── Main ───────────────────────────────────────────────────────────
+// ─── Main ──────────────────────────────────────────────────────────
 
 async function main() {
   const forceAll = process.argv.includes("--force") || process.argv.includes("-f");
@@ -290,7 +265,15 @@ async function main() {
   if (deletedKeys.length) {
     console.log(`--- Removed ${deletedKeys.length} deleted file entries ---`);
     for (const key of deletedKeys) {
+      const [type, relPath] = key.split(":");
+      const uid = computeUid(path.join(type === "docs" ? DOCS_DIR : PLANS_DIR_ROOT, relPath), type);
       console.log(`  [removed] ${key}`);
+      try {
+        await deleteFromMeili(uid);
+        console.log(`    → deleted from Meilisearch (uid: ${uid})`);
+      } catch (err) {
+        console.error(`    ✗ Meili delete failed: ${err.message}`);
+      }
       delete state.files[key];
     }
     console.log("");

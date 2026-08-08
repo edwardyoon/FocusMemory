@@ -3,6 +3,7 @@ dotenv.config({ override: true }); // .env 최우선 — settings.json env 변�
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
+import { Meilisearch } from "meilisearch";
 import { z } from "zod";
 import fetch, { Request as NodeRequest } from "node-fetch";
 import { Hono } from "hono";
@@ -11,6 +12,9 @@ import { createWriteStream } from "fs";
 import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
+const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7701";
+const MEILI_INDEX = process.env.MEILI_INDEX || "docs_plans";
+const MEILI_MASTER_KEY = process.env.MEILI_MASTER_KEY;
 
 // Log file for tracking Hook vs MCP tool invocations (visible via `tail -f`)
 const LOG_FILE = process.env.FOCUS_LOG_FILE;
@@ -28,6 +32,54 @@ function log(...args) {
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 
 const qdrant = new QdrantClient({ url: QDRANT_URL });
+
+// Meilisearch client for docs/plans text search
+let meiliIndex = null;
+if (MEILI_MASTER_KEY) {
+  const meiliClient = new Meilisearch({ host: MEILI_HOST, apiKey: MEILI_MASTER_KEY });
+  meiliIndex = meiliClient.index(MEILI_INDEX);
+}
+
+/**
+ * Search docs/plans via Meilisearch.
+ * Returns normalized results compatible with the rest of the pipeline.
+ */
+async function searchMeili(query, options = {}) {
+  if (!meiliIndex) return [];
+
+  const { source, limit = 10 } = options;
+  const filter = source ? `source = '${source}'` : null;
+
+  try {
+    const result = await meiliIndex.search(query, {
+      limit,
+      filter,
+      attributesToRetrieve: ["title", "content", "filepath", "source", "uid"],
+    });
+
+    return result.hits.map((h) => ({
+      score: _meiliScoreToCosine(h._formatted?.score ?? h._scoresDetails),
+      payload: {
+        source_doc: h.filepath,
+        content: `${h.title}\n${h.content}`,
+        summary_text: h.title,
+        detail: h.content.slice(0, 500),
+        related_files: [h.filepath],
+        type: "doc",
+      },
+      _collection: source === "plans" ? "work_memory" : "project_facts",
+    }));
+  } catch (err) {
+    log(`[searchMeili] error: ${err.message}`);
+    return [];
+  }
+}
+
+/** Convert Meilisearch relevance to a cosine-like score [0,1] */
+function _meiliScoreToCosine() {
+  // Meilisearch doesn't expose raw score easily; use 0.85 as baseline for hits
+  return 0.85;
+}
 
 // Send text to bge-m3 embedding server and get back a vector
 async function embed(text) {
@@ -84,6 +136,10 @@ function rerankMerged(allResults) {
  */
 function formatResult(r, collection) {
   if (collection === "work_memory") {
+    const isMeili = r.payload.type === "doc";
+    if (isMeili) {
+      return `[${r.payload.source_doc}] ${r.payload.summary_text}\n  content: ${String(r.payload.detail || "").slice(0, 200)}\n  score: ${(r.score ?? 0).toFixed(3)}`;
+    }
     return `[${r.payload.type}] ${r.payload.summary_text}\n  detail: ${r.payload.detail}\n  files: ${(r.payload.related_files || []).join(", ")}\n  score: ${r.score.toFixed(3)} (rerank: ${r.rerank_score?.toFixed(3)})`;
   } else if (collection === "graph") {
     if (r.payload.kind === "graph_node") {
@@ -93,6 +149,10 @@ function formatResult(r, collection) {
     }
     return `graph result (score: ${r.score.toFixed(3)})`;
   } else if (collection === "project_facts") {
+    const isMeili = r.payload.type === "doc";
+    if (isMeili) {
+      return `[${r.payload.source_doc}] ${r.payload.summary_text}\n  content: ${String(r.payload.detail || "").slice(0, 200)}\n  score: ${(r.score ?? 0).toFixed(3)}`;
+    }
     return `[${r.payload.source_doc}] ${r.payload.content}\n  score: ${r.score.toFixed(3)} (rerank: ${r.rerank_score?.toFixed(3)})`;
   }
   return `score: ${r.score?.toFixed(3)}`;
@@ -158,6 +218,10 @@ server.registerTool(
         });
         return results.map((r) => ({ ...r, _collection: col }));
       });
+
+      // Also search Meilisearch for docs/plans text matches (탐색구간도 포함)
+      const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
+      searches.push(meiliSearch);
 
       const batches = await Promise.all(searches);
       allResults.push(...batches.flat());
@@ -376,28 +440,34 @@ server.registerTool(
     },
   },
   async ({ query, project, status }) => {
-    const vector = await embed(query);
-    const must = [];
-    if (project) must.push({ key: "project", match: { value: project } });
-    if (status !== "any") must.push({ key: "status", match: { value: status } });
+    // Meilisearch text search on plans (source="plans")
+    const meiliResults = await searchMeili(query, { source: "plans", limit: 5 });
 
-    const results = await qdrant.search("work_memory", {
-      vector,
-      filter: must.length ? { must } : undefined,
-      limit: 5,
-      with_payload: true,
-    });
+    // If Qdrant is available and we need additional filtering by project/status, also search there
+    let qdrantResults = [];
+    try {
+      const vector = await embed(query);
+      if (vector) {
+        const must = [];
+        if (project) must.push({ key: "project", match: { value: project } });
+        if (status !== "any") must.push({ key: "status", match: { value: status } });
+        qdrantResults = await qdrant.search("work_memory", {
+          vector,
+          filter: must.length ? { must } : undefined,
+          limit: 5,
+          with_payload: true,
+        }).then(r => r.map(x => ({ ...x, _collection: "work_memory" }))).catch(() => []);
+      }
+    } catch {}
 
-    const text = results
-      .map(
-        (r) =>
-          `[${r.payload.type}] ${r.payload.summary_text}\n  detail: ${r.payload.detail}\n  files: ${(r.payload.related_files || []).join(", ")}\n  score: ${r.score.toFixed(3)}`
-      )
-      .join("\n\n");
+    const allResults = [...qdrantResults, ...meiliResults];
 
-    return {
-      content: [{ type: "text", text: text || "No matching records found" }],
-    };
+    if (allResults.length === 0) {
+      return { content: [{ type: "text", text: "No matching records found." }] };
+    }
+
+    const formatted = allResults.map((r, i) => `#${i + 1} [${r._collection}] ${formatResult(r, r._collection)}`);
+    return { content: [{ type: "text", text: formatted.join("\n\n") }] };
   }
 );
 
@@ -413,16 +483,15 @@ server.registerTool(
     },
   },
   async ({ query }) => {
-    const vector = await embed(query);
-    const results = await qdrant.search("project_facts", {
-      vector,
-      limit: 5,
-      with_payload: true,
-    });
-    const text = results
-      .map((r) => `[${r.payload.source_doc}] ${r.payload.content}`)
-      .join("\n\n");
-    return { content: [{ type: "text", text: text || "No matching documents found" }] };
+    // Meilisearch text search on docs (source="docs")
+    const meiliResults = await searchMeili(query, { source: "docs", limit: 5 });
+
+    if (meiliResults.length === 0) {
+      return { content: [{ type: "text", text: "No matching documents found." }] };
+    }
+
+    const formatted = meiliResults.map((r, i) => `#${i + 1} [${r._collection}] ${formatResult(r, r._collection)}`);
+    return { content: [{ type: "text", text: formatted.join("\n\n") }] };
   }
 );
 
@@ -985,6 +1054,10 @@ async function doSearch(query) {
       });
       return results.map((r) => ({ ...r, _collection: col }));
     });
+
+    // Also search Meilisearch for docs/plans text matches
+    const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
+    searches.push(meiliSearch);
 
     const batches = await Promise.all(searches);
     allResults.push(...batches.flat());

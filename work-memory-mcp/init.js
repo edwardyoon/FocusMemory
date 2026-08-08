@@ -103,18 +103,20 @@ async function main() {
   const envExamplePath = path.join(mcpDir, ".env.example");
   const wroteEnv = await writeFileIfAbsent(envExamplePath, `# FocusMemory MCP Server Configuration
 
-# Qdrant vector database (required)
+# Qdrant vector database (required for code chunks & decision chains)
 QDRANT_URL=http://127.0.0.1:6333
 
 # BGE-M3 embedding server (required for search)
 BGE_URL=http://127.0.0.1:8080/v1/embeddings
 
-# Qwen LLM for document chunking (required for ingest)
-QWEN_URL=http://127.0.0.1:8080/v1/chat/completions
+# Meilisearch (required for docs/plans text search)
+MEILI_HOST=http://localhost:7701
+MEILI_INDEX=docs_plans
+MEILI_MASTER_KEY=your_master_key_here
 
 # Summary lightweight LLM for prune & summarize (optional, graceful fallback if unavailable)
 SUMMARY_LLM_URL=http://127.0.0.1:8081/v1/chat/completions
-SUMMARY_LLM_MODEL=summary-27b
+SUMMARY_LLM_MODEL=gemma-4
 
 # Project root for graph/code indexing (defaults to /opt/homebrew/var/www)
 GRAPH_ROOT=/path/to/your/project
