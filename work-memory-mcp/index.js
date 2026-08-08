@@ -8,7 +8,9 @@ import { z } from "zod";
 import fetch, { Request as NodeRequest } from "node-fetch";
 import { Hono } from "hono";
 import { serve } from "@hono/node-server";
+import fs from "fs/promises";
 import { createWriteStream } from "fs";
+import path from "path";
 import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
@@ -194,6 +196,9 @@ function formatResult(r, collection) {
       return `[${r.payload.source_doc}] ${r.payload.summary_text}\n  content: ${String(r.payload.detail || "").slice(0, 200)}\n  score: ${(r.score ?? 0).toFixed(3)}`;
     }
     return `[${r.payload.source_doc}] ${r.payload.content}\n  score: ${r.score.toFixed(3)} (rerank: ${r.rerank_score?.toFixed(3)})`;
+  } else if (collection === "code_structure") {
+    const abs = r.payload.absolutePath ? ` → ${r.payload.absolutePath}` : '';
+    return `[${r.payload.source_doc}] code file\n  entities: ${String(r.payload.detail || "").slice(0, 200)}\n  score: ${(r.score ?? 0).toFixed(3)}${abs}`;
   }
   return `score: ${r.score?.toFixed(3)}`;
 }
@@ -263,6 +268,23 @@ server.registerTool(
       const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
       searches.push(meiliSearch);
 
+      // P1: Cross-reference code_structure index — find relevant code files in one call
+      const structSearch = searchCodeStructure(query, { limit: Math.min(perCollectionLimit, 8) })
+        .then(results => results.map(r => ({
+          score: 0.85,
+          payload: {
+            source_doc: r.filepath,
+            content: `${r.filename}${r.description ? ': ' + r.description.slice(0, 200) : ''}`,
+            summary_text: r.filename,
+            detail: `entities: ${(r.entity_names || []).slice(0, 8).join(', ')}`,
+            related_files: [r.filepath],
+            type: "code_structure",
+            absolutePath: null, // resolved later by fallback chain
+          },
+          _collection: "code_structure",
+        }))).catch(() => []);
+      searches.push(structSearch);
+
       const batches = await Promise.all(searches);
       allResults.push(...batches.flat());
     }
@@ -278,6 +300,53 @@ server.registerTool(
     // Note: we do NOT slice here — keep expanded raw set for pruning (§2.5)
     if (allResults.length > 0 && route.mode === "parallel") {
       allResults = rerankMerged(allResults);
+    }
+
+    // ── P3: Fallback chain — if no results, retry backends that weren't targeted ──
+    const triedBackends = new Set([
+      ...vectorTargets.map(t => t),
+      graphTarget || null,
+      chainTarget || null,
+      "meili", // meili always runs with vector targets
+      "code_structure", // P1 always runs with vector targets
+    ].filter(Boolean));
+
+    if (allResults.length === 0 && !chainOutput) {
+      const fallbackTargets = ["work_memory", "project_facts", "code_chunks", "graph"].filter(t => !triedBackends.has(t));
+      for (const fb of fallbackTargets) {
+        if (fb === "graph") {
+          const fbGraph = await searchGraph(query, 5);
+          allResults.push(...fbGraph);
+        } else {
+          try {
+            const fbVector = await embed(query);
+            if (fbVector) {
+              const fbResults = await qdrant.search(fb, { vector: fbVector, limit: 5, with_payload: true });
+              allResults.push(...fbResults.map(r => ({ ...r, _collection: fb })));
+            }
+          } catch {}
+        }
+        if (allResults.length > 0) {
+          log(`[MCP search_memory] fallback hit on ${fb}, results=${allResults.length}`);
+          break; // stop at first successful fallback
+        }
+      }
+      // Also try code_structure as last resort
+      if (allResults.length === 0 && !triedBackends.has("code_structure")) {
+        const fbStruct = await searchCodeStructure(query, { limit: 5 });
+        allResults.push(...fbStruct.map(r => ({
+          score: 0.7,
+          payload: {
+            source_doc: r.filepath,
+            content: `${r.filename}${r.description ? ': ' + r.description.slice(0, 200) : ''}`,
+            summary_text: r.filename,
+            detail: `entities: ${(r.entity_names || []).slice(0, 8).join(', ')}`,
+            related_files: [r.filepath],
+            type: "code_structure",
+          },
+          _collection: "code_structure",
+        })));
+      }
     }
 
     // Build output with routing explanation
@@ -1106,6 +1175,265 @@ server.registerTool(
     const text = `File structure search results for "${query}" (${results.length} matches):\n\n${formatted.join("\n\n")}`;
     log(`[MCP search_file_structure] done, results=${results.length}`);
     return { content: [{ type: "text", text }] };
+  }
+);
+
+// --- Tool 8: get_context_bundle — 파일 + 관련 chunk + caller/callee 한 번에 반환 (P2) ---
+server.registerTool(
+  "get_context_bundle",
+  {
+    title: "Get Context Bundle",
+    description:
+      "Returns a complete context bundle for a file: full content, relevant code chunks from semantic search, caller/callee graph edges, and related decisions. Use this INSTEAD of separate read_file + search_code calls to save round trips.",
+    inputSchema: {
+      filepath: z.string().describe("Relative or absolute file path (e.g. 'verbally_server/redis.js')"),
+      include_chunks: z.boolean().optional().default(true).describe("Include semantically related code chunks from Qdrant"),
+      include_graph: z.boolean().optional().default(true).describe("Include caller/callee edges from graph backend"),
+      chunk_limit: z.number().optional().default(5).describe("Max chunks to include (default 5)"),
+    },
+  },
+  async ({ filepath, include_chunks = true, include_graph = true, chunk_limit = 5 }) => {
+    log(`[MCP get_context_bundle] source=mcp, filepath="${filepath}", chunks=${include_chunks}, graph=${include_graph}`);
+
+    // Resolve path
+    const absPath = await resolveFilePath(filepath);
+    if (!absPath) {
+      return { content: [{ type: "text", text: `⚠️ 파일을 찾을 수 없습니다: ${filepath}\n\nsearch_file_structure로 정확한 경로를 확인하세요.` }] };
+    }
+
+    let output = `## File: ${filepath}\n`;
+    output += `Path: ${absPath}\n\n`;
+
+    // Read file content (with line limit to avoid token explosion)
+    try {
+      const content = await fs.readFile(absPath, "utf-8");
+      const lines = content.split("\n");
+      const lineCount = lines.length;
+      output += `Lines: ${lineCount}\n\n`;
+
+      // Show first 100 lines as preview, summarize rest
+      if (lineCount <= 200) {
+        output += `\`\`\`${path.extname(absPath).slice(1)}\n${content}\n\`\`\`\n`;
+      } else {
+        output += `*(Large file — showing first 100 lines)*\n\n\`\`\`${path.extname(absPath).slice(1)}\n${lines.slice(0, 100).join("\n")}\n... (${lineCount - 100} more lines)\n\`\`\`\n`;
+      }
+    } catch (err) {
+      output += `⚠️ 파일 읽기 실패: ${err.message}\n\n`;
+    }
+
+    // Include related code chunks from Qdrant (P2: semantic match on filename + entities)
+    if (include_chunks) {
+      try {
+        const vector = await embed(filepath);
+        if (vector) {
+          const chunkResults = await qdrant.search("code_chunks", {
+            vector,
+            filter: { must: [{ key: "file_path", match: { value: filepath } }] },
+            limit: chunk_limit,
+            with_payload: true,
+          }).catch(() => []);
+
+          if (chunkResults.length > 0) {
+            output += `\n## Related Chunks in this file (${chunkResults.length})\n`;
+            for (const [i, r] of chunkResults.entries()) {
+              const p = r.payload;
+              output += `#${i + 1} \`${p.entity_name}\` (${p.entity_type}) at line ${p.start_line}-${p.end_line} (score: ${r.score.toFixed(3)})\n`;
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Include caller/callee graph edges (P2: dependency context)
+    if (include_graph) {
+      try {
+        const fnMatch = filepath.match(/[^/]+\.(\w+)$/);
+        const baseName = fnMatch ? path.basename(filepath, '.' + fnMatch[1]) : null;
+
+        if (baseName) {
+          // Find graph nodes for this file
+          const nodeRes = await qdrant.scroll("graph_nodes", {
+            filter: { must: [{ key: "file", match: { value: filepath } }] },
+            limit: 10,
+            with_payload: true,
+          }).catch(() => ({ points: [] }));
+
+          if (nodeRes.points.length > 0) {
+            output += `\n## Graph Nodes in this file (${nodeRes.points.length})\n`;
+            for (const p of nodeRes.points) {
+              output += `- \`${p.payload.name}\` at line ${p.payload.line} (${p.payload.lang})\n`;
+
+              // Find callers for each function
+              const edgeRes = await qdrant.scroll("graph_edges", {
+                filter: { must: [{ key: "target_name", match: { value: p.payload.name } }] },
+                limit: 5,
+                with_payload: true,
+              }).catch(() => ({ points: [] }));
+
+              if (edgeRes.points.length > 0) {
+                output += `  ← called by:\n`;
+                for (const e of edgeRes.points.slice(0, 3)) {
+                  output += `    - \`${e.payload.caller_name}\` at ${e.payload.source_file}:${e.payload.caller_line}\n`;
+                }
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    log(`[MCP get_context_bundle] done for ${filepath}`);
+    return { content: [{ type: "text", text: output }] };
+  }
+);
+
+// --- Tool 9: trace_references — multi-hop caller/callee tracing (P4) ---
+server.registerTool(
+  "trace_references",
+  {
+    title: "Trace References",
+    description:
+      "Traces multi-hop caller/callee references for a function or file. Follows the call chain up to N hops, showing who calls whom and where. Use this instead of repeated search_code calls to build dependency chains.",
+    inputSchema: {
+      target: z.string().describe("Function name or file path to trace (e.g. 'callRestAPIAsync' or 'redis.js')"),
+      direction: z.enum(["callers", "callees", "both"]).optional().default("both").describe("Trace direction: callers (who calls it), callees (what it calls), or both"),
+      max_hops: z.number().optional().default(2).describe("Max hops to follow (default 2, max 4)"),
+    },
+  },
+  async ({ target, direction = "both", max_hops = 2 }) => {
+    log(`[MCP trace_references] source=mcp, target="${target}", direction=${direction}, max_hops=${max_hops}`);
+
+    const hops = Math.min(max_hops, 4);
+    const visited = new Set();
+    const chain = [];
+
+    // Step 1: Find anchor nodes (functions matching the target)
+    let anchors = [];
+
+    // Try as function name first
+    const fnRes = await qdrant.scroll("graph_nodes", {
+      filter: { must: [{ key: "name", match: { value: target } }] },
+      limit: 5,
+      with_payload: true,
+    }).catch(() => ({ points: [] }));
+
+    if (fnRes.points.length > 0) {
+      anchors = fnRes.points.map(p => p.payload);
+    } else {
+      // Try as file path
+      const fileRes = await qdrant.scroll("graph_nodes", {
+        filter: { must: [{ key: "file", match: { value: target } }] },
+        limit: 10,
+        with_payload: true,
+      }).catch(() => ({ points: [] }));
+
+      anchors = fileRes.points.map(p => p.payload);
+    }
+
+    if (anchors.length === 0) {
+      // Fallback: search code_structure for the target
+      const structResults = await searchCodeStructure(target, { limit: 3 });
+      if (structResults.length > 0) {
+        return { content: [{ type: "text", text: `그래프에 노드가 없으나 코드 구조에서 ${structResults.length}개 파일을 찾았습니다:\n\n${structResults.map(r => `- \`${r.filepath}\` → entities: ${(r.entity_names || []).join(', ')}`).join("\n")}\n\n→ index-structure로 최신 그래프를 구축하세요.` }] };
+      }
+      return { content: [{ type: "text", text: `⚠️ '${target}'에 대한 노드를 찾을 수 없습니다.\n\nsearch_file_structure로 정확한 함수명이나 파일명을 확인하세요.` }] };
+    }
+
+    let output = `## Trace: ${target}\n`;
+    output += `Anchors found: ${anchors.length} | Direction: ${direction} | Max hops: ${hops}\n\n`;
+
+    // Step 2: Walk the graph for each hop
+    async function getCallers(funcName) {
+      const res = await qdrant.scroll("graph_edges", {
+        filter: { must: [{ key: "target_name", match: { value: funcName } }] },
+        limit: 10,
+        with_payload: true,
+      }).catch(() => ({ points: [] }));
+      return res.points.map(p => p.payload);
+    }
+
+    async function getCallees(funcName) {
+      const res = await qdrant.scroll("graph_edges", {
+        filter: { must: [{ key: "caller_name", match: { value: funcName } }] },
+        limit: 10,
+        with_payload: true,
+      }).catch(() => ({ points: [] }));
+      return res.points.map(p => p.payload);
+    }
+
+    let currentNodes = anchors;
+
+    for (let hop = 0; hop < hops; hop++) {
+      const hopLabel = hop === 0 ? "Anchor" : `Hop ${hop}`;
+      output += `--- ${hopLabel} (${currentNodes.length} node${currentNodes.length > 1 ? "s" : ""}) ---\n`;
+
+      for (const node of currentNodes) {
+        const nodeId = `${node.name}@${node.file || "?"}`;
+        if (visited.has(nodeId)) continue;
+        visited.add(nodeId);
+
+        output += `\n### \`${node.name}\` (${node.file}:${node.line})\n`;
+
+        // Show callers
+        if (direction === "callers" || direction === "both") {
+          const callers = await getCallers(node.name);
+          if (callers.length > 0) {
+            output += `  ← called by:\n`;
+            for (const c of callers.slice(0, 5)) {
+              output += `    - \`${c.caller_name}\` at ${c.source_file || "?"}:${c.caller_line || "?"}\n`;
+            }
+          }
+        }
+
+        // Show callees
+        if (direction === "callees" || direction === "both") {
+          const callees = await getCallees(node.name);
+          if (callees.length > 0) {
+            output += `  → calls:\n`;
+            for (const c of callees.slice(0, 5)) {
+              output += `    - \`${c.target_name}\` at ${c.target_file || "?"}:${c.target_line || "?"}\n`;
+            }
+          }
+        }
+
+        if (!callers.length && !callees.length) {
+          output += `  (leaf node — no edges)\n`;
+        }
+      }
+
+      // Collect next-hop nodes (unique, unvisited)
+      const nextNodes = [];
+      for (const node of currentNodes) {
+        if (direction === "callers" || direction === "both") {
+          const callers = await getCallers(node.name);
+          for (const c of callers) {
+            const cid = `${c.caller_name}@${c.source_file || "?"}`;
+            if (!visited.has(cid)) {
+              visited.add(cid);
+              nextNodes.push({ name: c.caller_name, file: c.source_file, line: c.caller_line });
+            }
+          }
+        }
+        if (direction === "callees" || direction === "both") {
+          const callees = await getCallees(node.name);
+          for (const c of callees) {
+            const cid = `${c.target_name}@${c.target_file || "?"}`;
+            if (!visited.has(cid)) {
+              visited.add(cid);
+              nextNodes.push({ name: c.target_name, file: c.target_file, line: c.target_line });
+            }
+          }
+        }
+      }
+
+      currentNodes = nextNodes.slice(0, 15); // cap to avoid explosion
+      if (currentNodes.length === 0) break;
+    }
+
+    output += `\n## Summary\nTotal unique nodes visited: ${visited.size}\n`;
+
+    log(`[MCP trace_references] done, visited=${visited.size}`);
+    return { content: [{ type: "text", text: output }] };
   }
 );
 

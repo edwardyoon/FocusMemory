@@ -326,11 +326,21 @@ function formatRawResult(r, collection) {
  *
  * Raw Qdrant 결과(top N~15개)를 SUMMARY_LLM 경량 LLM에 전달하여:
  * - 질문과 직접 관련된 핵심 팩트만 남기고 요약
- * - 무관하거나 중복된内容是 완전히 제거(Prune)
- * - 실패 시 원본 raw 포맷으로 graceful fallback
+ * - 무관하거나 중복된 내용은 완전히 제거(Prune)
+ * - 실패 시 lightweight keyword summary로 graceful fallback
+ *
+ * P5 optimizations:
+ * - results < 4 → LLM 호출 생략 (keyword extract로 대체, ~30s 절약)
+ * - timeout 120s → 30s 단축
+ * - null 대신 lightweightKeywordSummary 반환
  */
 export async function pruneAndSummarize(query, results) {
   if (!results || results.length === 0) return null;
+
+  // P5-opt: Skip LLM for small result sets — keyword extract is faster and sufficient
+  if (results.length <= 4) {
+    return lightweightKeywordSummary(query, results);
+  }
 
   const formatted = results.map((r, i) => {
     const col = r._collection || "unknown";
@@ -354,7 +364,8 @@ ${formatted}
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    // P5-opt: Reduced timeout from 120s to 30s — most summaries complete in <10s locally
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     const res = await fetch(SUMMARY_LLM_URL, {
       method: "POST",
@@ -373,24 +384,61 @@ ${formatted}
 
     if (res.status !== 200) {
       console.error(`[pruneAndSummarize] SUMMARY_LLM HTTP ${res.status}, falling back`);
-      return null;
+      return lightweightKeywordSummary(query, results);
     }
 
     const data = await res.json();
     if (!data.choices || !data.choices[0]?.text) {
       console.error("[pruneAndSummarize] unexpected response structure, falling back");
-      return null;
+      return lightweightKeywordSummary(query, results);
     }
 
     return data.choices[0].text.trim();
   } catch (err) {
     if (err.name === "AbortError") {
-      console.error("[pruneAndSummarize] timeout (120s), falling back to raw");
+      console.error("[pruneAndSummarize] timeout (30s), falling back to keyword summary");
     } else {
-      console.error(`[pruneAndSummarize] error: ${err.message}, falling back to raw`);
+      console.error(`[pruneAndSummarize] error: ${err.message}, falling back to keyword summary`);
     }
-    return null;
+    return lightweightKeywordSummary(query, results);
   }
+}
+
+/**
+ * Lightweight fallback: extract key facts from results using keyword overlap with query.
+ * No LLM call needed — O(n) scan of result payloads against query tokens.
+ */
+function lightweightKeywordSummary(query, results) {
+  const queryTokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+  if (queryTokens.length === 0) return null;
+
+  // Score each result by keyword overlap
+  const scored = results.map(r => {
+    const text = `${r.payload?.content || ""} ${r.payload?.summary_text || ""} ${r.payload?.detail || ""}`.toLowerCase();
+    const hits = queryTokens.filter(t => text.includes(t)).length;
+    return { score: hits / Math.max(queryTokens.length, 1), result: r };
+  }).filter(s => s.score > 0);
+
+  scored.sort((a, b) => b.score - a.score);
+
+  if (scored.length === 0) return null;
+
+  // Build compact summary from top matches
+  const top = scored.slice(0, Math.min(scored.length, 5));
+  let summary = `## Key Findings\n`;
+  for (const [i, s] of top.entries()) {
+    const r = s.result;
+    const col = r._collection || "unknown";
+    const p = r.payload || {};
+    const title = p.summary_text || p.source_doc || `(result #${i + 1})`;
+    summary += `${i + 1}. [${col}] ${title}\n`;
+    if (p.detail) {
+      const detailPreview = p.detail.slice(0, 200);
+      summary += `   → ${detailPreview}\n`;
+    }
+  }
+
+  return summary.trim();
 }
 
 // ─── Query Router (README §1: scoring function + decision fallback) ──
