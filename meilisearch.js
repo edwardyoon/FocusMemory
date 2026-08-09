@@ -27,7 +27,7 @@ if (!MASTER_KEY) {
 }
 
 const client = new Meilisearch({
-  host: "http://localhost:7701",
+  host: "http://localhost:7700",
   apiKey: MASTER_KEY,
 });
 

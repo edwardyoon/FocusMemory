@@ -14,7 +14,7 @@ import path from "path";
 import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
-const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7701";
+const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7700";
 const MEILI_INDEX = process.env.MEILI_INDEX || "docs_plans";
 const MEILI_MASTER_KEY = process.env.MEILI_MASTER_KEY;
 

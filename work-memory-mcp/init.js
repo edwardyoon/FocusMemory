@@ -110,7 +110,7 @@ QDRANT_URL=http://127.0.0.1:6333
 BGE_URL=http://127.0.0.1:8080/v1/embeddings
 
 # Meilisearch (required for docs/plans text search)
-MEILI_HOST=http://localhost:7701
+MEILI_HOST=http://localhost:7700
 MEILI_INDEX=docs_plans
 MEILI_MASTER_KEY=your_master_key_here
 

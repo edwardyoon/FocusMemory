@@ -16,7 +16,7 @@ const MAX_FILE_SIZE = 200_000;
 
 // Meilisearch
 const meiliClient = new Meilisearch({
-  host: process.env.MEILI_HOST || "http://localhost:7701",
+  host: process.env.MEILI_HOST || "http://localhost:7700",
   apiKey: process.env.MEILI_MASTER_KEY || "",
 });
 const MEILI_INDEX = process.env.MEILI_CODE_STRUCTURE_INDEX || "code_structure";

@@ -13,7 +13,7 @@ const ROOT = path.resolve(DOCS_DIR, ".."); // project root
 // ─── Meilisearch client ────────────────────────────────────────────
 
 const meiliClient = new Meilisearch({
-  host: process.env.MEILI_HOST || "http://localhost:7701",
+  host: process.env.MEILI_HOST || "http://localhost:7700",
   apiKey: process.env.MEILI_MASTER_KEY || "",
 });
 const MEILI_INDEX = process.env.MEILI_INDEX || "docs_plans";
