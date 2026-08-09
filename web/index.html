@@ -4,19 +4,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FocusMemory — memory infrastructure for agentic coding</title>
-<meta name="description" content="FocusMemory is memory infrastructure for agentic coding. Routing precision, caching and chunking, real-time incremental indexing.">
+<title>FocusMemory — living knowledge base for AI coding agents</title>
+<meta name="description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
 
 <!-- Open Graph -->
-<meta property="og:title" content="FocusMemory — memory infrastructure for agentic coding">
-<meta property="og:description" content="FocusMemory is memory infrastructure for agentic coding. Routing precision, caching and chunking, real-time incremental indexing.">
+<meta property="og:title" content="FocusMemory — living knowledge base for AI coding agents">
+<meta property="og:description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
 <meta property="og:image" content="https://cdn.udanax.org/logos/focus-memory-qwen-extension.png">
 <meta property="og:type" content="website">
 
 <!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="FocusMemory — memory infrastructure for agentic coding">
-<meta name="twitter:description" content="FocusMemory is memory infrastructure for agentic coding. Routing precision, caching and chunking, real-time incremental indexing.">
+<meta name="twitter:title" content="FocusMemory — living knowledge base for AI coding agents">
+<meta name="twitter:description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
 <meta name="twitter:image" content="https://cdn.udanax.org/logos/focus-memory-qwen-extension.png">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -471,7 +471,7 @@
 
 <footer>
   <div class="wrap">
-    <span>FocusMemory — memory infrastructure for agentic coding · MIT License</span>
+    <span>FocusMemory — living knowledge base for AI coding agents · MIT License</span>
   </div>
 </footer>
 
@@ -484,6 +484,114 @@
   },{threshold:0.12});
   els.forEach(e=>obs.observe(e));
 })();
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "FocusMemory",
+  "url": "https://focusmemory.org",
+  "description": "Turn your workspace into a living knowledge base for AI coding agents. FocusMemory pre-indexes business decisions, project documentation, code structure, and semantic history — then exposes them through intelligent, scoring-based routing via a single MCP server. Think of it as an onboarding process your agent never forgets: new sessions start with full context about past decisions, architectural rationale, and how the system evolved — without burning tokens on repetitive file discovery.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "macOS, Linux",
+  "programmingLanguage": ["JavaScript", "TypeScript"],
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "license": "https://opensource.org/licenses/MIT",
+  "softwareVersion": "1.0.0",
+  "featureList": [
+    "Causal decision chains — trace the full history of architectural choices, from original rationale through every replacement",
+    "Work history and session memory — decisions, bug fixes, and resolved issues persist across agent sessions",
+    "Project knowledge base — docs and plans chunked, embedded, and searchable via vector similarity",
+    "Semantic code search — natural-language queries against JS/TS/PHP function bodies using BGE-M3 embeddings",
+    "Code dependency graph — tree-sitter AST parsing for 'who calls X?' questions",
+    "Scoring-based query routing — automatic dispatch to the right backend (vector, keyword, or decision chain)",
+    "Prune and summarize — lightweight local LLM compresses raw search results into core facts before agent injection",
+    "Auto-supersede detection — new decisions that replace old ones are linked automatically with embedding similarity"
+  ],
+  "screenshot": "https://cdn.udanax.org/logos/focus-memory-qwen-extension.png",
+  "author": {
+    "@type": "Person",
+    "name": "Edward Yoon",
+    "url": "https://github.com/edwardyoon"
+  },
+  "sameAs": [
+    "https://github.com/edwardyoon/FocusMemory"
+  ],
+  "aggregateRating": {
+    "@type": "AggregateRating",
+    "ratingCount": 1,
+    "bestRating": 5,
+    "worstRating": 1,
+    "ratingValue": 5
+  }
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "FocusMemory",
+  "url": "https://focusmemory.org",
+  "description": "Living knowledge base for AI coding agents — minimize token waste in source exploration with pre-indexed recall and scoring-based routing."
+}
+</script>
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "HowTo",
+  "name": "Set up FocusMemory for your project",
+  "description": "Initialize a workspace, create Qdrant collections, ingest docs and code chunks, and start the MCP server — get persistent memory for your AI coding agent in under 5 minutes.",
+  "totalTime": "PT5M",
+  "supply": [
+    {"@type": "HowToSupply", "name": "Node.js"},
+    {"@type": "HowToSupply", "name": "Qdrant vector database"},
+    {"@type": "HowToSupply", "name": "BGE-M3 embedding server"}
+  ],
+  "step": [
+    {
+      "@type": "HowToStep",
+      "position": 1,
+      "name": "Initialize workspace",
+      "text": "Run 'cd work-memory-mcp && npm install && node init.js /path/to/your/project' to create the docs/, plans/, and .focusmemoryignore structure.",
+      "url": "https://github.com/edwardyoon/FocusMemory#1-initialize-workspace"
+    },
+    {
+      "@type": "HowToStep",
+      "position": 2,
+      "name": "Create Qdrant collections",
+      "text": "Run 'npm run create-collections' to set up work_memory, graph_nodes, code_chunks, and decision_chains with payload indexes.",
+      "url": "https://github.com/edwardyoon/FocusMemory#2-create-qdrant-collections"
+    },
+    {
+      "@type": "HowToStep",
+      "position": 3,
+      "name": "Ingest docs and code chunks",
+      "text": "Run 'npm run auto-ingest --force' to chunk all docs/plans markdown files and index JS/TS/PHP function bodies for semantic search.",
+      "url": "https://github.com/edwardyoon/FocusMemory#3-ingest-docs--plans-one-time"
+    },
+    {
+      "@type": "HowToStep",
+      "position": 4,
+      "name": "Set up cron for continuous indexing",
+      "text": "Schedule 'npm run auto-ingest' every 5 minutes to keep indexes incremental and up to date via mtime-based state tracking.",
+      "url": "https://github.com/edwardyoon/FocusMemory#4-set-up-cron-job-for-continuous-indexing"
+    },
+    {
+      "@type": "HowToStep",
+      "position": 5,
+      "name": "Start the MCP server and connect your agent",
+      "text": "Set QDRANT_URL and BGE_URL environment variables, run 'npm start', and configure stdio transport in your AI coding client (Qwen Code, Kilo Code).",
+      "url": "https://github.com/edwardyoon/FocusMemory#5-start-the-mcp-server"
+    }
+  ]
+}
 </script>
 
 </body>
