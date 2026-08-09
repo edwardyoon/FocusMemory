@@ -11,7 +11,7 @@ import { serve } from "@hono/node-server";
 import fs from "fs/promises";
 import { createWriteStream } from "fs";
 import path from "path";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./utils.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./lib/utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7700";

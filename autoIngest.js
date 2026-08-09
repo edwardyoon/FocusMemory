@@ -282,7 +282,7 @@ async function main() {
   // ── Code structure indexing (Meilisearch — file metadata) ──────
   console.log("--- Indexing code structure ---");
 
-  const structScript = path.join(path.dirname(new URL(import.meta.url).pathname), "indexCodeStructure.js");
+  const structScript = path.join(path.dirname(new URL(import.meta.url).pathname), "scripts", "indexCodeStructure.js");
   const structArgs = [structScript];
   if (process.env.GRAPH_ROOT) {
     structArgs.push(process.env.GRAPH_ROOT);
@@ -308,7 +308,7 @@ async function main() {
   // ── Code chunk indexing (incremental, unless --force) ─────────
   console.log("--- Indexing code chunks ---");
 
-  const indexScript = path.join(path.dirname(new URL(import.meta.url).pathname), "semantic_codesearch", "indexCodeChunks.js");
+  const indexScript = path.join(path.dirname(new URL(import.meta.url).pathname), "lib", "codesearch", "indexCodeChunks.js");
   const codeArgs = [indexScript];
   if (process.env.GRAPH_ROOT) {
     codeArgs.push(process.env.GRAPH_ROOT);

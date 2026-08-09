@@ -8,12 +8,12 @@
     "focus-memory": {
       "command": "node",
       "args": [
-        "/opt/homebrew/var/www/FocusMemory/work-memory-mcp/index.js"
+        "/opt/homebrew/var/www/FocusMemory/index.js"
       ],
       "env": {
         "QDRANT_URL": "http://localhost:6333",
         "BGE_URL": "http://localhost:8080/v1/embeddings",
-        "SUMMARY_LLM_URL": "http://localhost:8081/v1/chat/completions",
+        "SUMMARY_LLM_URL": "http://localhost:8081/v1/completions",
         "HTTP_PORT": "3900",
         "CONTEXT_API_TOKEN": "focus-memory-local",
         "FOCUS_LOG_FILE": "/tmp/focus-memory.log"

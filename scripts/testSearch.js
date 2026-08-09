@@ -2,7 +2,7 @@ import dotenv from "dotenv";
 dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import { QdrantClient } from "@qdrant/js-client-rest";
 import fetch from "node-fetch";
-import { extractQueryFeatures, routeQuery } from "./utils.js";
+import { extractQueryFeatures, routeQuery } from "../lib/utils.js";
 
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";

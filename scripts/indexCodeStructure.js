@@ -6,7 +6,7 @@ import crypto from "crypto";
 import { Meilisearch } from "meilisearch";
 import Parser from "tree-sitter";
 import JSLang from "tree-sitter-javascript";
-import { scanFiles, loadIgnorePatterns } from "./utils.js";
+import { scanFiles, loadIgnorePatterns } from "../lib/utils.js";
 
 // ─── Configuration ──────────────────────────────────────────────
 

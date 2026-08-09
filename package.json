@@ -1,25 +1,47 @@
 {
-  "name": "focusmemory",
-  "version": "1.0.0",
-  "description": "<div align=\"center\">",
+  "name": "@focusmemory/work-memory-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for FocusMemory — work history, decisions (Qdrant), docs/plans text search (Meilisearch), and code graph",
   "main": "index.js",
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: No test specified\" && exit 1",
-    "index": "MEILI_MASTER_KEY=$(grep MEILI_MASTER_KEY ~/.meilisearch.env | cut -d= -f2) node meilisearch.js"
+    "start": "node index.js",
+    "create-collections": "node scripts/createCollection.js",
+    "auto-ingest": "node autoIngest.js",
+    "auto-ingest:force": "node autoIngest.js --force",
+    "build-graph": "node scripts/buildGraph.js",
+    "index-chunks": "node lib/codesearch/indexCodeChunks.js",
+    "index-chunks:force": "node lib/codesearch/indexCodeChunks.js --force",
+    "index-structure": "node scripts/indexCodeStructure.js",
+    "index-structure:force": "node scripts/indexCodeStructure.js --force",
+    "search": "node scripts/testSearch.js"
   },
+  "keywords": [
+    "mcp",
+    "qdrant",
+    "memory",
+    "rag",
+    "code-graph"
+  ],
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/edwardyoon/FocusMemory.git"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "bugs": {
     "url": "https://github.com/edwardyoon/FocusMemory/issues"
   },
   "homepage": "https://github.com/edwardyoon/FocusMemory#read-me",
   "dependencies": {
-    "meilisearch": "^0.60.0"
+    "@hono/node-server": "^2.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@qdrant/js-client-rest": "^1.18.0",
+    "dotenv": "^17.4.2",
+    "hono": "^4.13.0",
+    "meilisearch": "^0.60.0",
+    "node-fetch": "^3.3.2",
+    "tree-sitter": "^0.25.1",
+    "tree-sitter-javascript": "^0.25.0",
+    "zod": "^4.4.3"
   }
 }

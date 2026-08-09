@@ -1,15 +1,18 @@
 #!/usr/bin/env node
 // Index .md files under www/docs and www/plans into Meilisearch
-const fs = require("fs");
-const path = require("path");
-const { Meilisearch } = require("meilisearch");
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import { Meilisearch } from "meilisearch";
 
-const ROOT = path.resolve(__dirname, ".."); // /Users/edwardyoon/www
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+const ROOT = path.resolve(__dirname, ".."); // /opt/homebrew/var/www
 const DOCS_DIR = path.join(ROOT, "docs");
 const PLANS_DIR = path.join(ROOT, "plans");
 
 // Read MEILI_MASTER_KEY from environment variable or .meilisearch.env file
-const ENV_FILE = path.resolve(__dirname, "../../../.meilisearch.env");
+const ENV_FILE = path.resolve(__dirname, "../../.meilisearch.env");
 let MASTER_KEY = process.env.MEILI_MASTER_KEY || "";
 if (!MASTER_KEY && fs.existsSync(ENV_FILE)) {
   for (const line of fs.readFileSync(ENV_FILE, "utf8").split("\n")) {
