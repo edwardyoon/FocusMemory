@@ -19,9 +19,11 @@
 
 Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
 
-FocusMemory gives your AI coding agent persistent memory: **causal decision chains**, past decisions, project knowledge, semantic code search, and structural dependency graphs — all backed by Qdrant and exposed through a single MCP server.
+FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing.
 
-> **Causal Decision Chains** — Every decision is stored as a linked chain node with `supersedes`/`superseded_by` relationships. Ask "why was this built this way?" and get back the full causal history: what was decided, why it replaced the previous approach, and what came after.
+Think of it as an **onboarding process your agent never forgets**: new sessions start with full context about past decisions, architectural rationale, code dependencies, and how the system evolved — without burning tokens on repetitive file discovery.
+
+> **Token waste in source exploration** is the hidden cost of AI-assisted development. An agent without memory repeats this loop: grep → read → reason → retry. Each round-trip burns context tokens, inflates VRAM, and adds latency. FocusMemory replaces on-demand discovery with **pre-indexed recall + scoring-based routing**, cutting average tool calls per query from 3.5 to 1.8 (~49% reduction) and response time from 25s to 8s (~68%).
 
 <br>
 
@@ -43,17 +45,9 @@ FocusMemory moves through the same loop on every query:
 
 Grep can't do any of this. It doesn't route, it doesn't prune, and it has no idea what superseded what.
 
-### The problem FocusMemory solves: token waste in source exploration
+### How FocusMemory eliminates token waste in source exploration
 
-An AI agent solving a problem without pre-indexed memory goes through this loop:
-
-```
-(1) run grep/glob → (2) read matched files → (3) file content enters context tokens
-→ (4) LLM reasons over that context → (5) KV cache on VRAM grows, latency increases
-→ (6) if results are poor, the cycle repeats (round-trip accumulation)
-```
-
-Each round-trip burns context tokens, inflates VRAM usage, and adds seconds of latency. FocusMemory short-circuits this loop by replacing on-demand file discovery with **pre-indexed recall**:
+An AI agent without pre-indexed memory repeats this loop: grep → read → reason → retry. Each round-trip burns context tokens, inflates VRAM usage, and adds latency. FocusMemory replaces on-demand file discovery with **pre-indexed recall**:
 
 | Stage | Without FocusMemory | With FocusMemory | Saved per query |
 |---|---|---|---|
