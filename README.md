@@ -85,7 +85,6 @@ An AI agent without pre-indexed memory repeats this loop: grep → read → reas
 ### 1. Initialize workspace
 
 ```bash
-cd work-memory-mcp
 npm install
 node init.js /path/to/your/project
 ```
@@ -126,7 +125,7 @@ Run `auto-ingest` periodically (e.g., every 5 minutes via crontab or launchd):
 
 ```bash
 # Crontab example — runs every 5 minutes
-*/5 * * * * cd /path/to/work-memory-mcp && npm run auto-ingest >> /var/log/focusmemory.log 2>&1
+*/5 * * * * cd /path/to/FocusMemory && npm run auto-ingest >> /var/log/focusmemory.log 2>&1
 ```
 
 `auto-ingest` is incremental by default: it compares file modification times against a state file (`ingest_state.json`) and only re-processes new or changed files. It also runs the **semantic code chunk indexer** automatically, so your `.js`, `.ts`, and `.php` functions stay up to date without manual intervention.
@@ -230,20 +229,29 @@ JS/TS/PHP files are parsed (tree-sitter for JS, regex fallback for TS/PHP) to ex
 
 ```
 FocusMemory/
-├── README.md
-├── qwen-code-extension/      # Qwen Code extension (manifest + AGENTS.md)
-│   ├── qwen-extension.json   # Extension manifest (mcpServers + hooks)
-│   ├── AGENTS.md             # Hard Gate search protocol rules
-│   └── README.md             # Installation & usage guide
-└── work-memory-mcp/          # MCP server (core)
-    ├── index.js              # MCP stdio + Hono HTTP — 8 tools, /v1/context/search endpoint
-    ├── init.js               # Workspace initializer (creates docs/, plans/, .focusmemoryignore)
-    ├── createCollection.js   # Initialize Qdrant collections & payload indexes
-    ├── buildGraph.js         # tree-sitter JS + regex TS/PHP → function nodes + call edges
-    ├── autoIngest.js         # Incremental doc/plan ingest + code chunk reindex (cron-safe)
-    ├── semantic_codesearch/  # Code chunk extraction & indexing pipeline
-    │   └── indexCodeChunks.js
-    └── package.json
+├── .env.example            # Environment config template
+├── index.js                # MCP stdio + Hono HTTP — 8 tools, /v1/context/search endpoint
+├── init.js                 # Workspace initializer (creates docs/, plans/, .focusmemoryignore)
+├── autoIngest.js           # Incremental doc/plan ingest + code chunk reindex (cron-safe)
+├── meilisearch.js          # MeiliSearch indexer for docs/plans Markdown files
+├── lib/                    # Shared libraries
+│   ├── utils.js            # scanFiles, loadIgnorePatterns, extractQueryFeatures, routeQuery, pruneAndSummarize
+│   └── codesearch/         # Code chunk extraction & indexing pipeline
+│       └── indexCodeChunks.js
+├── scripts/                # CLI utility scripts
+│   ├── createCollection.js # Initialize Qdrant collections & payload indexes
+│   ├── buildGraph.js       # tree-sitter JS + regex TS/PHP → function nodes + call edges
+│   ├── indexCodeStructure.js  # MeiliSearch code structure indexer
+│   └── testSearch.js       # Search test CLI
+├── config/                 # Configuration files
+│   └── com.focusmemory.autoingest.plist  # launchd cron job
+├── logs/                   # Auto-generated state & log files (gitignored)
+├── qwen-code-extension/    # Qwen Code extension (manifest + AGENTS.md)
+│   ├── qwen-extension.json # Extension manifest (mcpServers + hooks)
+│   ├── AGENTS.md           # Hard Gate search protocol rules
+│   └── README.md           # Installation & usage guide
+├── package.json
+└── README.md
 ```
 
 <br>
