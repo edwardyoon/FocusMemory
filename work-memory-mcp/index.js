@@ -1113,7 +1113,8 @@ server.registerTool(
     },
   },
   async ({ query, limit }) => {
-    const url = new URL("http://localhost:18080/search");
+    const searxngUrl = process.env.SEARXNG_URL || "http://localhost:18080";
+    const url = new URL(`${searxngUrl}/search`);
     url.searchParams.set("q", query);
     url.searchParams.set("format", "json");
 
