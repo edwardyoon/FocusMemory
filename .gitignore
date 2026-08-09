@@ -9,3 +9,4 @@ work-memory-mcp/bridge-slave.sh
 work-memory-mcp/mysql-mcp-bridge.js
 work-memory-mcp/.env.master
 work-memory-mcp/.env.slave
+work-memory-mcp/code_structure_state.json
