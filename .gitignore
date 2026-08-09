@@ -10,3 +10,4 @@ work-memory-mcp/mysql-mcp-bridge.js
 work-memory-mcp/.env.master
 work-memory-mcp/.env.slave
 work-memory-mcp/code_structure_state.json
+work-memory-mcp/ingest_state.json
