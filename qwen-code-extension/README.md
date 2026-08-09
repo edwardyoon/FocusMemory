@@ -159,15 +159,15 @@ QDRANT_URL=http://localhost:6333 \
 
 ### 5. Enable the extension
 
-**CLI 모드**: extension이 자동으로 로드됩니다. 별도 설정 불필요.
+**CLI mode**: The extension loads automatically. No additional configuration needed.
 
-**VS Code IDE 모드**: `extension-enablement.json`에서 명시적으로 활성화해야 합니다:
+**VS Code IDE mode**: You need to explicitly enable it in `extension-enablement.json`:
 
 ```bash
 echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
 ```
 
-활성화하지 않으면 VS Code IDE에서 AGENTS.md가 system prompt에 인젝션되지 않아, Hard Gate가 작동하지 않습니다. CLI는 자동으로 로드되므로 이 단계가 필요 없습니다.
+Without this, AGENTS.md won't be injected into the system prompt in VS Code IDE, and the Hard Gate won't function. The CLI loads extensions automatically so this step is not required.
 
 ### 6. Run qwen-code
 
@@ -197,7 +197,7 @@ QDRANT_URL=http://localhost:6333 \
   CONTEXT_API_TOKEN=focus-memory-local \
   node index.js &
 
-# 4. Enable extension (VS Code IDE 모드 필수, CLI는 자동)
+# 4. Enable extension (required for VS Code IDE, automatic for CLI)
 echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
 
 # 5. Run qwen-code — extension loads automatically
@@ -207,7 +207,7 @@ npm run dev -- "Your question here"
 
 That's it. Every prompt triggers an auto-recall HTTP hook (context injected before the agent loop), and all six MCP tools are available during the session.
 
-> **VS Code IDE에서 사용 시**: Step 4의 `extension-enablement.json` 설정이 필수입니다. 없으면 AGENTS.md Hard Gate가 작동하지 않습니다.
+> **For VS Code IDE**: The `extension-enablement.json` setting in Step 4 is required. Without it, the AGENTS.md Hard Gate will not function.
 
 ---
 

@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드
+dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import { QdrantClient } from "@qdrant/js-client-rest";
 import fetch from "node-fetch";
 import fs from "fs/promises";
@@ -248,12 +248,12 @@ export async function inferTopicKey(content) {
 
   // Step 3: SUMMARY_LLM classification fallback
   const topicList = uniqueTopics.slice(0, 20).join(", ");
-  const prompt = `아래 결정 내용을 가장 잘 설명하는 주제(topic)를 선택하거나 새 주제를 제안하세요.
+  const prompt = `Select the best matching topic from the existing list below, or suggest a new topic key for the following decision content.
 
-기존 주제 목록: ${topicList}
-결정 내용: ${content}
+Existing topics: ${topicList}
+Decision content: ${content}
 
-기존 주제 중 하나와 일치하면 그 이름만, 아니면 새로운 짧은 키워드(2~4단어, snake_case)로 답하세요.`;
+If it matches an existing topic, return just that name. Otherwise, suggest a short keyword (2-4 words, snake_case).`;
 
   try {
     const res = await fetch(SUMMARY_LLM_URL, {
@@ -322,17 +322,17 @@ function formatRawResult(r, collection) {
 }
 
 /**
- * Search result fragments를 Query 관점에서 필요한 내용만 추출/압축 (Self-Editing).
+ * Extract and compress result fragments from search results relative to the Query (Self-Editing).
  *
- * Raw Qdrant 결과(top N~15개)를 SUMMARY_LLM 경량 LLM에 전달하여:
- * - 질문과 직접 관련된 핵심 팩트만 남기고 요약
- * - 무관하거나 중복된 내용은 완전히 제거(Prune)
- * - 실패 시 lightweight keyword summary로 graceful fallback
+ * Pass raw Qdrant results (top N~15) to SUMMARY_LLM lightweight LLM to:
+ * - Keep only core facts directly related to the question and summarize them
+ * - Completely remove irrelevant or duplicate content (Prune)
+ * - Graceful fallback to lightweight keyword summary on failure
  *
  * P5 optimizations:
- * - results < 4 → LLM 호출 생략 (keyword extract로 대체, ~30s 절약)
- * - timeout 120s → 30s 단축
- * - null 대신 lightweightKeywordSummary 반환
+ * - results < 4 → Skip LLM call (use keyword extract instead, saves ~30s)
+ * - timeout reduced from 120s to 30s
+ * - Return lightweightKeywordSummary instead of null on failure
  */
 export async function pruneAndSummarize(query, results) {
   if (!results || results.length === 0) return null;
@@ -349,27 +349,27 @@ export async function pruneAndSummarize(query, results) {
 
   const hasDocsResults = results.some(r => r._collection === "meili" && (r.payload?.source === "docs"));
 
-  const prompt = `너는 사용자의 질문에 직접 답하는 기술 문서 작성가다.
-[검색된 결과 파편들]을 근거로 [사용자 질문]에 대한 **완전한 답변**을 합성(Synthesize)하여 작성하라.
-단순히 사실을 나열하지 말고, 논리적인 흐름으로 조직된 하나의 답변을 구성하라.
+  const prompt = `You are a technical document writer who directly answers user questions.
+Using [searched result fragments] as evidence, **synthesize a complete answer** to the [user question].
+Do not just list facts — organize them into a single, logically flowing response.
 
-[사용자 질문]: ${query}
+[User Question]: ${query}
 
-[검색된 결과 파편들]:
+[Searched Result Fragments]:
 ${formatted}
 
-[출력 규칙]:
-- 사용자 질문에 직접 답하는 형태로 작성할 것 (서론/인사말 금지).
-- 검색 결과를 근거로 사용하여 논리적인 흐름으로 조직할 것.
-- 파일 경로, 함수명, 컬럼명 등 구체적 사실은 정확히 포함할 것.
-- 여러 소스가 같은 사실을 언급하면 하나로 병합하고 출처는 명시하지 말 것.
-- 질문과 무관한 내용은 완전히 제외할 것.
-- 검색 결과에 답이 없으면 "해당 주제에 대한 충분한 정보가 없습니다"라고만 출력할 것.
-- 답변 마지막에 아래 형식으로 **##참조 파일** 섹션을 붙일 것:
-  - 검색 결과에서 등장하는 파일 중, 질문 이해/추적에 핵심인 파일만 3~5개 선정
-  - 각 줄은 "- \`파일경로\` — 한 줄 설명(어떤 내용을 확인하면 되는지)" 형식
-  - 중복 파일은 병합하고, 질문과 무관한 파일은 제외
-  - 검색 결과에 파일 경로가 전혀 없으면 이 섹션을 생략`;
+[Output Rules]:
+- Write in a format that directly answers the user's question (no introduction/greeting).
+- Use search results as evidence and organize them into a logical flow.
+- Include specific facts accurately: file paths, function names, column names, etc.
+- If multiple sources mention the same fact, merge them into one without citing sources.
+- Completely exclude content unrelated to the question.
+- If search results have no answer, output "There is not enough information on this topic."
+- At the end of your response, append a **## Reference Files** section in the following format:
+  - Select only 3-5 core files from the search results that are essential for understanding/tracking the question
+  - Each line: "- \`file_path\` — one-line description (what content to check)"
+  - Merge duplicate files and exclude irrelevant ones
+  - Omit this section if there are no file paths in the search results`;
 
   try {
     const controller = new AbortController();

@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드;
+dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import fs from "fs/promises";
 import path from "path";
 import { qdrant, scanFiles } from "./utils.js";

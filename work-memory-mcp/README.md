@@ -1,19 +1,19 @@
 # FocusMemory Work Memory MCP Server
 
-MCP 서버로, 작업 이력/결정 기록, 문서 검색, 코드 그래프 탐색을 제공합니다.
+MCP server providing work history/decision logging, document search, and code graph exploration.
 
-## 아키텍처
+## Architecture
 
-| 기능 | 백엔드 | 저장소 |
+| Feature | Backend | Storage |
 |------|--------|--------|
-| 작업 이력 & 결정 (work_memory) | Qdrant 벡터 검색 | `work_memory` 컬렉션 |
-| 결정 인과 연쇄 (decision_chains) | Qdrant 벡터 + 체인 탐색 | `decision_chains` 컬렉션 |
-| 코드 시맨틱 검색 (code_chunks) | Qdrant 벡터 검색 | `code_chunks` 컬렉션 |
-| 코드 그래프 (graph_nodes/edges) | Qdrant payload 키워드 검색 | `graph_nodes`, `graph_edges` |
-| 코드 구조 메타데이터 (code_structure) | Meilisearch 풀텍스트 검색 | `code_structure` 인덱스 |
-| 문서 & 계획 텍스트 검색 | Meilisearch 풀텍스트 검색 | `docs_plans` 인덱스 |
+| Work history & decisions (work_memory) | Qdrant vector search | `work_memory` collection |
+| Decision causal chains (decision_chains) | Qdrant vector + chain traversal | `decision_chains` collection |
+| Code semantic search (code_chunks) | Qdrant vector search | `code_chunks` collection |
+| Code graph (graph_nodes/edges) | Qdrant payload keyword search | `graph_nodes`, `graph_edges` |
+| Code structure metadata (code_structure) | Meilisearch full-text search | `code_structure` index |
+| Document & plan text search | Meilisearch full-text search | `docs_plans` index |
 
-### 검색 파이프라인 (`search_memory`)
+### Search Pipeline (`search_memory`)
 
 ```
 query → feature extraction → scoring router → parallel backend search
@@ -49,67 +49,67 @@ FocusMemory short-circuits this loop via **pre-indexing + unified search**:
 
 **Result**: average tool calls per query 3.5 → 1.8 (~49% reduction), response time 25s → 8s (~68% reduction)
 
-## 설치
+## Installation
 
 ```bash
 cd work-memory-mcp
 npm install
 ```
 
-## 환경 설정
+## Environment Setup
 
-`.env.example`을 복사하고 값을 수정합니다:
+Copy `.env.example` and update the values:
 
 ```bash
 cp .env.example .env
 ```
 
-필수 변수:
-- `QDRANT_URL` — Qdrant 서버 주소 (예: `http://127.0.0.1:6333`)
-- `BGE_URL` — BGE-M3 임베딩 서버 주소
-- `MEILI_HOST` / `MEILI_MASTER_KEY` — Meilisearch 설정
+Required variables:
+- `QDRANT_URL` — Qdrant server address (e.g., `http://127.0.0.1:6333`)
+- `BGE_URL` — BGE-M3 embedding server address
+- `MEILI_HOST` / `MEILI_MASTER_KEY` — Meilisearch configuration
 
-선택 변수:
-- `SUMMARY_LLM_URL` / `SUMMARY_LLM_MODEL` — 경량 LLM (prune & summarize용, 없으면 graceful fallback)
-- `GRAPH_ROOT` — 코드 그래프/코드 시맨틱 검색 대상 루트 디렉토리
-- `DOCS_DIR` / `PLANS_DIR` — 문서 및 계획 파일 위치
+Optional variables:
+- `SUMMARY_LLM_URL` / `SUMMARY_LLM_MODEL` — Lightweight LLM (for prune & summarize, graceful fallback if not set)
+- `GRAPH_ROOT` — Root directory for code graph/semantic search scanning
+- `DOCS_DIR` / `PLANS_DIR` — Location of document and plan files
 
-## Qdrant 컬렉션 생성
+## Create Qdrant Collections
 
 ```bash
 npm run create-collections
 ```
 
-`work_memory`, `graph_nodes`, `graph_edges`, `code_chunks`, `decision_chains` 컬렉션과 payload 인덱스를 생성합니다.
+Creates `work_memory`, `graph_nodes`, `graph_edges`, `code_chunks`, `decision_chains` collections and payload indexes.
 
-## 초기 데이터 수집
+## Initial Data Ingestion
 
 ```bash
-# 첫 실행: 모든 파일 강제 수집
+# First run: force ingest all files
 npm run auto-ingest --force
 
-# 이후 실행: 변경된 파일만 증분 수집 (mtime 기반)
+# Subsequent runs: incremental ingest of changed files (mtime-based)
 npm run auto-ingest
 ```
 
-`autoIngest.js`는 다음을 처리합니다:
-1. `docs/`, `plans/` 하위 `.md` 파일을 스캔하여 Meilisearch에 업서트
-2. 삭제된 파일은 Meilisearch에서 제거
-3. 코드 구조 메타데이터 (code_structure)를 Meilisearch에 색인 ← P1
-4. 코드 시맨틱 검색용 code_chunks를 Qdrant에 색인
+`autoIngest.js` handles the following:
+1. Scan `docs/`, `plans/` subdirectories for `.md` files and upsert to Meilisearch
+2. Remove deleted files from Meilisearch
+3. Index code structure metadata (code_structure) to Meilisearch ← P1
+4. Index code chunks for semantic search to Qdrant
 
-정기 실행 (cron 예시):
+Scheduled execution (cron example):
 ```bash
 */5 * * * * cd /path/to/work-memory-mcp && npm run auto-ingest
 ```
 
-## MCP 서버 실행
+## Run MCP Server
 
 ```bash
 npm start
 ```
 
-Qwen Code의 `settings.json`에서 MCP 서버로 등록합니다:
+Register as an MCP server in Qwen Code's `settings.json`:
 
 ```json
 {
@@ -123,33 +123,33 @@ Qwen Code의 `settings.json`에서 MCP 서버로 등록합니다:
 }
 ```
 
-## MCP 도구
+## MCP Tools
 
-| 도구 | 설명 |
+| Tool | Description |
 |------|------|
-| `search_memory` | **통합 검색** — scoring 기반 라우팅으로 work_memory, graph, decision_chains + Meilisearch 병렬 탐색. P1(code_structure), P3(fallback chain), P5(prune optimize) 적용 |
-| `get_context_bundle` | **컨텍스트 번들** ← P2 — 파일 전체 내용 + 관련 code_chunks + caller/callee 그래프를 한 번에 반환. 별도 `read_file` + `search_code` 호출 불필요 |
-| `trace_references` | **Multi-hop 참조 추적** ← P4 — 함수/파일의 caller/callee 체인을 N-hop까지 자동 탐색. 반복적인 `search_code` 대신 사용 |
-| `search_work_memory` | 작업 이력/결정 검색 (Meilisearch plans + Qdrant work_memory) |
-| `search_project_facts` | 문서 텍스트 검색 (Meilisearch docs) |
-| `search_file_structure` | 파일 구조 메타데이터 검색 (Meilisearch code_structure) |
-| `remember_decision` | 결정 기록. work_memory + decision_chains에 저장, 자동 대체 감지 |
-| `trace_decision_chain` | 주제의 결정 연쇄 체인 추적 |
+| `search_memory` | **Unified search** — scoring-based routing across work_memory, graph, decision_chains + Meilisearch parallel search. P1(code_structure), P3(fallback chain), P5(prune optimize) applied |
+| `get_context_bundle` | **Context bundle** ← P2 — Returns full file content + related code_chunks + caller/callee graph in one call. No need for separate `read_file` + `search_code` calls |
+| `trace_references` | **Multi-hop reference tracing** ← P4 — Auto-traverse N-hop caller/callee chains for functions/files. Use instead of repeated `search_code` calls |
+| `search_work_memory` | Work history/decision search (Meilisearch plans + Qdrant work_memory) |
+| `search_project_facts` | Document text search (Meilisearch docs) |
+| `search_file_structure` | File structure metadata search (Meilisearch code_structure) |
+| `remember_decision` | Record decisions. Stored in work_memory + decision_chains, auto-supersede detection |
+| `trace_decision_chain` | Trace decision chain for a topic |
 
-## 코드 그래프 빌드
+## Build Code Graph
 
 ```bash
-# 전체 그래프 재빌드
+# Rebuild entire graph
 npm run build-graph
 
-# 코드 시맨틱 색인 (증분)
+# Code semantic index (incremental)
 npm run index-chunks
-npm run index-chunks -- --force    # 강제 전량 재색인
+npm run index-chunks -- --force    # Force full reindex
 ```
 
-## 프로젝트 초기화
+## Project Initialization
 
-새 프로젝트에 docs/plans 디렉토리와 `.focusmemoryignore`를 생성:
+Create docs/plans directories and `.focusmemoryignore` for a new project:
 
 ```bash
 node init.js /path/to/your/project
@@ -157,51 +157,51 @@ node init.js /path/to/your/project
 
 ---
 
-## 토큰 절감 및 예상효과
+## Token Savings & Expected Impact
 
-### P1 — code_structure 크로스 참조
+### P1 — code_structure cross-reference
 
-| 항목 | 개선 전 | 개선 후 | 효과 |
-|------|---------|---------|------|
-| `search_memory`가 코드 구조를 찾는 방식 | Qdrant code_chunks 벡터 검색만 의존 | Meilisearch code_structure 병렬 탐색 추가 | 파일 메타데이터(경로, 엔티티명)가 즉시 노출되어 불필요한 follow-up `grep_search` 호출 감소 |
-| 라운드트립 | `search_memory` → 결과 부족 → `grep_search` → `read_file` (2~3회) | `search_memory` 한 번으로 파일 구조 파악 가능 | **~1회 tool call 절감/query** |
+| Item | Before | After | Effect |
+|------|--------|-------|--------|
+| How `search_memory` finds code structure | Only relies on Qdrant code_chunks vector search | Added Meilisearch code_structure parallel search | File metadata (paths, entity names) exposed immediately, reducing unnecessary follow-up `grep_search` calls |
+| Round trips | `search_memory` → insufficient results → `grep_search` → `read_file` (2-3 times) | Single `search_memory` call reveals file structure | **~1 tool call saved/query** |
 
-### P2 — context bundle 도구
+### P2 — context bundle tool
 
-| 항목 | 개선 전 | 개선 후 | 효과 |
-|------|---------|---------|------|
-| 파일 컨텍스트 수집 | `read_file`(1) + `search_code`(1) + `grep_search`(0~2) = **2~4회** | `get_context_bundle`(1) = **1회** | **~2회 tool call 절감/파일**, 파일 내용 + 시맨틱 chunk + caller/callee 한 번에 반환 |
-| 토큰 사용량 | 각 호출마다 별도 context window 할당 | 단일 응답으로 중복 컨텍스트 제거 | **~30% context token 절감** (파일 탐색 작업 기준) |
+| Item | Before | After | Effect |
+|------|--------|-------|--------|
+| File context collection | `read_file`(1) + `search_code`(1) + `grep_search`(0-2) = **2-4 calls** | `get_context_bundle`(1) = **1 call** | **~2 tool calls saved/file**, file content + semantic chunk + caller/callee in one response |
+| Token usage | Separate context window per call | Single response eliminates duplicate context | **~30% context token savings** (for file exploration tasks) |
 
 ### P3 — fallback chain
 
-| 항목 | 개선 전 | 개선 후 | 효과 |
-|------|---------|---------|------|
-| 검색 실패 시 대응 | "No matching records found" → 사용자가 다른 도구 재시도 | 자동으로 미탐색 백엔드 재시도 (최대 4개) | **~1회 추가 tool call 절감**, empty result 비율 감소 |
-| 사용자 경험 | 검색 실패 후 수동 재탐색 필요 | 투명하게 fallback 처리 | 실수 최소화, 첫 시도 성공률 ↑ |
+| Item | Before | After | Effect |
+|------|--------|-------|--------|
+| Empty result handling | "No matching records found" → user retries with another tool | Auto-retry unsearched backends (up to 4) | **~1 additional tool call saved**, reduced empty result rate |
+| User experience | Manual re-exploration after search failure | Transparent fallback handling | Minimized errors, higher first-attempt success rate |
 
 ### P4 — multi-hop trace_references
 
-| 항목 | 개선 전 |改进 후 | 효과 |
-|------|---------|--------|------|
-| 함수 참조 추적 | `search_code` → 결과 확인 → 다음 함수로 재검색 (N회 반복) | `trace_references` 1회 호출로 N-hop 자동 탐색 | **~3~5회 tool call 절감/함수**, caller/callee 체인 한 번에 가시화 |
-| 토큰 사용량 | 각 hop마다 별도 응답 컨텍스트 | 단일 응답으로 전체 체인 포함 | **~40% context token 절감** (레퍼런스 추적 작업 기준) |
+| Item | Before | After | Effect |
+|------|--------|-------|--------|
+| Function reference tracing | `search_code` → review results → re-search next function (N iterations) | Single `trace_references` call auto-traverses N hops | **~3-5 tool calls saved/function**, caller/callee chain visible in one response |
+| Token usage | Separate response context per hop | Single response includes entire chain | **~40% context token savings** (for reference tracing tasks) |
 
-### P5 — pruneAndSummarize 최적화
+### P5 — pruneAndSummarize optimization
 
-| 항목 | 개선 전 | 개선 후 | 효과 |
-|------|---------|---------|------|
-| 작은 결과셋 (≤4개) 처리 | SUMMARY_LLM 호출 (10~30s 대기) | keyword-based lightweight summary (즉시 반환) | **~20s 응답 시간 절감/query**, LLM 불필요 호출 방지 |
-| timeout | 120초 | 30초 | **90초 절약** (LLM 느린 경우), graceful fallback으로 keyword summary 제공 |
-| 실패 시 대응 | raw 결과 그대로 반환 (토큰 낭비) | lightweightKeywordSummary 자동 생성 | **~50% 출력 토큰 절감** (fallback 시) |
+| Item | Before | After | Effect |
+|------|--------|-------|--------|
+| Small result set (≤4 items) handling | SUMMARY_LLM call (10-30s wait) | Keyword-based lightweight summary (instant) | **~20s response time saved/query**, prevents unnecessary LLM calls |
+| Timeout | 120 seconds | 30 seconds | **90s saved** (when LLM is slow), graceful fallback with keyword summary |
+| Failure handling | Return raw results as-is (token waste) | Auto-generate lightweightKeywordSummary | **~50% output token savings** (on fallback) |
 
-### 종합 효과
+### Overall Impact
 
-| 지표 | 개선 전 | 개선 후 | 변화 |
-|------|---------|---------|------|
-| 평균 query당 tool call 수 | 3.5회 | 1.8회 | **~-49%** |
-| 평균 응답 대기 시간 | 25s (LLM 포함) | 8s (keyword fallback + timeout 단축) | **~-68%** |
-| context token 사용량 | ~4,000 tokens/query | ~2,200 tokens/query | **~-45%** |
-| empty result 비율 | ~12% | ~3% | **~9%p 감소** (fallback chain 효과) |
+| Metric | Before | After | Change |
+|------|--------|-------|--------|
+| Average tool calls per query | 3.5 | 1.8 | **~-49%** |
+| Average response wait time | 25s (with LLM) | 8s (keyword fallback + shorter timeout) | **~-68%** |
+| Context token usage | ~4,000 tokens/query | ~2,200 tokens/query | **~-45%** |
+| Empty result rate | ~12% | ~3% | **~9%p reduction** (fallback chain effect) |
 
-> **핵심**: grep → read → context token → LLM inference → KV cache growth → retry loop 사이클을 최소화하여 AI agent의 라운드트립을 단축하고 실수를 줄입니다.
+> **Key**: Minimize the grep → read → context token → LLM inference → KV cache growth → retry loop cycle to reduce AI agent round trips and errors.

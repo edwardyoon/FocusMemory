@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드
+dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
@@ -476,7 +476,7 @@ async function searchGraph(query, limit) {
   const lower = query.toLowerCase();
 
   // Extract function name: English identifier (camelCase/PascalCase/snake_case, 4+ chars)
-  // Handles: "callRestAPIAsync를 호출하는 곳", "getCwd() 함수 정의", "foo bar 함수"
+  // Handles queries like "who calls callRestAPIAsync", "getCwd() function definition", "foo bar function"
   const fnMatch = query.match(/([a-zA-Z_]\w{3,})/);
   const fileMatch = query.match(/[`'"]?([\w/.-]+\.\w{2,4})[`'"]?/);
 
@@ -593,15 +593,15 @@ async function traceChainInternal(anchorId) {
     const statusTag = n.status === "superseded" ? " (superseded)" : n.status === "active" ? " ← current" : "";
     output += `${i + 1}. [${date}] ${n.content}${statusTag}\n`;
     if (n.reasoning) {
-      output += `   → 이유: ${n.reasoning}\n`;
+      output += `   → Reason: ${n.reasoning}\n`;
     }
     if (n.file_paths?.length > 0) {
-      output += `   → 파일: ${n.file_paths.join(", ")}\n`;
+      output += `   → Files: ${n.file_paths.join(", ")}\n`;
     }
     if (n.supersedes) {
       const supersededIdx = chain.findIndex((c) => c.payload.decision_id === n.supersedes);
       if (supersededIdx >= 0) {
-        output += `   → 대체: #${supersededIdx + 1}\n`;
+        output += `   → Replaces: #${supersededIdx + 1}\n`;
       }
     }
     output += "\n";
@@ -884,15 +884,15 @@ server.registerTool(
       const statusTag = n.status === "superseded" ? " (superseded)" : n.status === "active" ? " ← current" : "";
       output += `${i + 1}. [${date}] ${n.content}${statusTag}\n`;
       if (n.reasoning) {
-        output += `   → 이유: ${n.reasoning}\n`;
+        output += `   → Reason: ${n.reasoning}\n`;
       }
       if (n.file_paths?.length > 0) {
-        output += `   → 파일: ${n.file_paths.join(", ")}\n`;
+        output += `   → Files: ${n.file_paths.join(", ")}\n`;
       }
       if (n.supersedes) {
         const supersededIdx = chain.findIndex((c) => c.payload.decision_id === n.supersedes);
         if (supersededIdx >= 0) {
-          output += `   → 대체: #${supersededIdx + 1}\n`;
+          output += `   → Replaces: #${supersededIdx + 1}\n`;
         }
       }
       output += "\n";
@@ -910,7 +910,7 @@ server.registerTool(
     description:
       "Search the function/call graph for structural queries: 'who calls X?', 'what functions are in Y file?', 'what does Z depend on?'. Use this for code-level dependency questions.",
     inputSchema: {
-      query: z.string().describe("Query about code structure, e.g. 'callRestAPIAsync를 호출하는 곳' or 'blogService.js에 정의된 함수'"),
+      query: z.string().describe("Query about code structure, e.g. 'who calls callRestAPIAsync' or 'functions defined in blogService.js'"),
       limit: z.number().optional().default(10),
     },
   },
@@ -929,7 +929,7 @@ server.registerTool(
       mode = "by_file";
     }
 
-    // Extract function name: look for patterns like "X를 호출하는 곳", "X 함수 정의"
+    // Extract function name: look for patterns like "X caller", "X function definition"
     const fnNameMatch = query.match(/([\w]+)(?:\s*(?:함수|function|메서드|method))?/);
     if (fnNameMatch && !fileMatch) {
       targetName = fnNameMatch[1];
@@ -1079,10 +1079,10 @@ server.registerTool(
       const nodeResults = await qdrant.scroll("graph_nodes", { limit, with_payload: true });
       output = `Graph index contains ${nodeResults.points.length} indexed functions.\n\n`;
       output += `Query patterns:\n`;
-      output += `- "X 함수 정의" → find function X\n`;
-      output += `- "X를 호출하는 곳" → reverse dependency of X\n`;
-      output += `- "X가 호출하는 것" → forward calls from X\n`;
-      output += `- "file.js에 정의된 함수" → functions in file.js\n\n`;
+      output += `- "X function definition" → find function X\n`;
+      output += `- "who calls X" → reverse dependency of X\n`;
+      output += `- "what X calls" → forward calls from X\n`;
+      output += `- "functions in file.js" → functions defined in file.js\n\n`;
 
       // Show sample nodes
       output += `Sample indexed functions:\n`;
@@ -1152,9 +1152,9 @@ server.registerTool(
   {
     title: "Semantic Code Search",
     description:
-      "Search the codebase semantically using natural language. Use for questions like 'API 키 생성하는 로직', 'DB 연결 pooling 처리'. For exact symbol lookups, prefer query_graph instead.",
+      "Search the codebase semantically using natural language. Use for questions like 'API key generation logic', 'DB connection pooling'. For exact symbol lookups, prefer query_graph instead.",
     inputSchema: {
-      query: z.string().describe("Natural language code search query (e.g. 'API 인증 토큰 생성')"),
+      query: z.string().describe("Natural language code search query (e.g. 'API auth token generation')"),
       language: z.string().optional().describe("Language filter: php, javascript, typescript (optional)"),
       entity_type: z.enum(["function", "method", "class"]).optional().describe("Entity type filter (optional)"),
       min_score: z.number().optional().default(0.4).describe("Similarity threshold (default 0.4, Kilo Code baseline)"),
@@ -1183,7 +1183,7 @@ server.registerTool(
       });
 
       if (results.length === 0) {
-        return { content: [{ type: "text", text: `코드베이스에서 "${query}"와 일치하는 결과가 없습니다.` }] };
+        return { content: [{ type: "text", text: `No matching results for "${query}" in codebase.` }] };
       }
 
       const formatted = results.map((r, i) => {
@@ -1197,7 +1197,7 @@ server.registerTool(
       return { content: [{ type: "text", text }] };
     } catch (err) {
       if (err.message && err.message.includes("not found")) {
-        return { content: [{ type: "text", text: "code_chunks 컬렉션이 존재하지 않습니다. 먼저 'npm run create-collections'와 'npm run index-chunks'를 실행하세요." }] };
+        return { content: [{ type: "text", text: "code_chunks collection does not exist. Run 'npm run create-collections' and 'npm run index-chunks' first." }] };
       }
       throw err;
     }
@@ -1223,7 +1223,7 @@ server.registerTool(
     const results = await searchCodeStructure(query, { language, limit: Math.min(limit, 50) });
 
     if (results.length === 0) {
-      return { content: [{ type: "text", text: `"${query}"과 일치하는 코드 파일을 찾을 수 없습니다. 먼저 'npm run index-structure'를 실행하여 구조 색인을 생성하세요.` }] };
+      return { content: [{ type: "text", text: `No matching code files for "${query}". Run 'npm run index-structure' first to build the structure index.` }] };
     }
 
     // Verify file paths exist and resolve to absolute paths
@@ -1237,7 +1237,7 @@ server.registerTool(
       if (r.absolutePath) {
         line += `\n  abs: ${r.absolutePath}`;
       } else {
-        line += " ⚠️ 파일 없음";
+        line += " ⚠️ file not found";
       }
       line += `\n  filename: ${r.filename} | language: ${r.language} | lines: ${r.line_count}\n`;
       if (r.entity_names && r.entity_names.length > 0) {
@@ -1255,7 +1255,7 @@ server.registerTool(
   }
 );
 
-// --- Tool 8: get_context_bundle — 파일 + 관련 chunk + caller/callee 한 번에 반환 (P2) ---
+// --- Tool 8: get_context_bundle — file + related chunks + caller/callee in one call (P2) ---
 server.registerTool(
   "get_context_bundle",
   {
@@ -1275,7 +1275,7 @@ server.registerTool(
     // Resolve path
     const absPath = await resolveFilePath(filepath);
     if (!absPath) {
-      return { content: [{ type: "text", text: `⚠️ 파일을 찾을 수 없습니다: ${filepath}\n\nsearch_file_structure로 정확한 경로를 확인하세요.` }] };
+      return { content: [{ type: "text", text: `⚠️ File not found: ${filepath}\n\nUse search_file_structure to find the correct path.` }] };
     }
 
     let output = `## File: ${filepath}\n`;
@@ -1295,7 +1295,7 @@ server.registerTool(
         output += `*(Large file — showing first 100 lines)*\n\n\`\`\`${path.extname(absPath).slice(1)}\n${lines.slice(0, 100).join("\n")}\n... (${lineCount - 100} more lines)\n\`\`\`\n`;
       }
     } catch (err) {
-      output += `⚠️ 파일 읽기 실패: ${err.message}\n\n`;
+      output += `⚠️ Failed to read file: ${err.message}\n\n`;
     }
 
     // Include related code chunks from Qdrant (P2: semantic match on filename + entities)
@@ -1411,9 +1411,9 @@ server.registerTool(
       // Fallback: search code_structure for the target
       const structResults = await searchCodeStructure(target, { limit: 3 });
       if (structResults.length > 0) {
-        return { content: [{ type: "text", text: `그래프에 노드가 없으나 코드 구조에서 ${structResults.length}개 파일을 찾았습니다:\n\n${structResults.map(r => `- \`${r.filepath}\` → entities: ${(r.entity_names || []).join(', ')}`).join("\n")}\n\n→ index-structure로 최신 그래프를 구축하세요.` }] };
+        return { content: [{ type: "text", text: `No graph nodes found, but found ${structResults.length} files in code structure:\n\n${structResults.map(r => `- \`${r.filepath}\` → entities: ${(r.entity_names || []).join(', ')}`).join("\n")}\n\n→ Run index-structure to build the latest graph.` }] };
       }
-      return { content: [{ type: "text", text: `⚠️ '${target}'에 대한 노드를 찾을 수 없습니다.\n\nsearch_file_structure로 정확한 함수명이나 파일명을 확인하세요.` }] };
+      return { content: [{ type: "text", text: `⚠️ No node found for '${target}'.\n\nUse search_file_structure to find the correct function or file name.` }] };
     }
 
     let output = `## Trace: ${target}\n`;
@@ -1643,11 +1643,11 @@ httpApp.post("/v1/context/search", async (c) => {
 
   // Build UserPromptSubmitOutput.additionalContext
   const sliced = allResults.slice(0, prunedSummary ? 3 : 5);
-  let additionalContext = "## 검색 결과 (자동 주입)\n\n";
+  let additionalContext = "## Search Results (Auto-injected)\n\n";
 
   if (prunedSummary) {
-    additionalContext += `### 요약\n${prunedSummary}\n\n`;
-    additionalContext += `### 출처 (top ${Math.min(sliced.length, allResults.length)} of ${allResults.length})\n`;
+    additionalContext += `### Summary\n${prunedSummary}\n\n`;
+    additionalContext += `### Sources (top ${Math.min(sliced.length, allResults.length)} of ${allResults.length})\n`;
   }
 
   sliced.forEach((r, i) => {

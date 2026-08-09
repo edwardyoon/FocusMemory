@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드;
+dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import { QdrantClient } from "@qdrant/js-client-rest";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";

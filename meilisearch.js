@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// www/docs 와 www/plans 하위의 .md 파일을 Meilisearch에 색인하는 스크립트
+// Index .md files under www/docs and www/plans into Meilisearch
 const fs = require("fs");
 const path = require("path");
 const { Meilisearch } = require("meilisearch");
@@ -8,7 +8,7 @@ const ROOT = path.resolve(__dirname, ".."); // /Users/edwardyoon/www
 const DOCS_DIR = path.join(ROOT, "docs");
 const PLANS_DIR = path.join(ROOT, "plans");
 
-// MEILI_MASTER_KEY 환경 변수 또는 .meilisearch.env 파일에서 읽기
+// Read MEILI_MASTER_KEY from environment variable or .meilisearch.env file
 const ENV_FILE = path.resolve(__dirname, "../../../.meilisearch.env");
 let MASTER_KEY = process.env.MEILI_MASTER_KEY || "";
 if (!MASTER_KEY && fs.existsSync(ENV_FILE)) {
@@ -34,7 +34,7 @@ const client = new Meilisearch({
 const INDEX_NAME = "docs_plans";
 
 /**
- * md 파일에서 heading 목록과 첫 번째 heading(제목) 추출
+ * Extract heading list and first heading (title) from a Markdown file
  */
 function extractHeadings(content) {
   const headings = [];
@@ -46,7 +46,7 @@ function extractHeadings(content) {
 }
 
 /**
- * 하위 디렉토리 포함하여 .md 파일 경로 목록 반환
+ * Return a list of .md file paths, including subdirectories
  */
 function findMdFiles(dir) {
   const results = [];
@@ -63,23 +63,23 @@ function findMdFiles(dir) {
 }
 
 /**
- * Markdown 파일 파싱 → Meilisearch 문서 객체
+ * Parse Markdown file → Meilisearch document object
  */
 function parseMd(filePath, source) {
   const content = fs.readFileSync(filePath, "utf8");
   const headings = extractHeadings(content);
   const title = headings.length > 0 ? headings[0].text : path.basename(filePath, ".md");
 
-  // 코드 블록 제거 후 순수 텍스트 추출 (검색 품질 개선)
+  // Remove code blocks, then extract plain text (improve search quality)
   let textContent = content.replace(/```[\s\S]*?```/g, "");
-  textContent = textContent.replace(/^#{1,6}\s+.+$/gm, "");   // heading 제거
-  textContent = textContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // 링크 텍스트만 남김
-  textContent = textContent.replace(/[|_\`\*\~]/g, "");       // markdown 구문 정리
+  textContent = textContent.replace(/^#{1,6}\s+.+$/gm, "");   // remove headings
+  textContent = textContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // keep only link text
+  textContent = textContent.replace(/[|_\`\*\~]/g, "");       // clean up markdown syntax
   textContent = textContent.replace(/\n{2,}/g, "\n").trim();
 
   const relPath = path.relative(ROOT, filePath);
 
-  // uid: 특수문자 제거 (Meilisearch document ID는 alphanumeric, hyphen, underscore만 허용)
+  // uid: remove special characters (Meilisearch document ID only allows alphanumeric, hyphen, underscore)
   const safeUid = `${source}_${relPath.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   return {
@@ -111,7 +111,7 @@ async function main() {
     return;
   }
 
-  // 인덱스 생성 또는 가져오기
+  // Create or retrieve index
   let index;
   try {
     const existing = await client.getIndex(INDEX_NAME);
@@ -120,19 +120,19 @@ async function main() {
     index = await client.createIndex(INDEX_NAME, { primaryKey: "uid" });
   }
 
-  // 검색 가능한 필드 설정
+  // Configure searchable fields
   console.log("Configuring settings...");
   await index.updateSettings({
     searchableAttributes: ["title", "content", "headings"],
     filterableAttributes: ["source"],
   });
 
-  // 문서 일괄 등록 (업sert)
+  // Bulk upsert documents
   console.log(`Indexing ${documents.length} documents into "${INDEX_NAME}"...`);
   const task = await index.addDocuments(documents, { primaryKey: "uid" });
   console.log(`Task enqueued: taskId=${task.taskUid}`);
 
-  // 완료 대기 (REST API 직접 호출)
+  // Wait for completion (direct REST API call)
   console.log("Waiting for indexing to complete...");
   while (true) {
     const resp = await fetch(`${client.config.host}/tasks/${task.taskUid}`, {
@@ -146,7 +146,7 @@ async function main() {
 
   console.log("✅ Indexing complete.");
 
-  // 검증: 문서 수 확인
+  // Verify: check document count
   const statsResp = await fetch(`${client.config.host}/indexes/docs_plans/stats`, {
     headers: MASTER_KEY ? { Authorization: `Bearer ${MASTER_KEY}` } : {},
   });

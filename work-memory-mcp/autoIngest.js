@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env 최우선 — settings.json env 변수 오버라이드;
+dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
 import fs from "fs/promises";
 import path from "path";
 import { spawn } from "child_process";
@@ -8,7 +8,7 @@ import { Meilisearch } from "meilisearch";
 const STATE_FILE = path.join(process.cwd(), "ingest_state.json");
 const DOCS_DIR = process.env.DOCS_DIR || path.join(process.cwd(), "..", "docs");
 const PLANS_DIR_ROOT = process.env.PLANS_DIR || path.join(process.cwd(), "..", "plans");
-const ROOT = path.resolve(DOCS_DIR, ".."); // www/ 루트
+const ROOT = path.resolve(DOCS_DIR, ".."); // project root
 
 // ─── Meilisearch client ────────────────────────────────────────────
 
@@ -89,16 +89,16 @@ async function parseMdFile(filePath, source) {
   const headings = extractHeadings(content);
   const title = headings.length > 0 ? headings[0].text : path.basename(filePath, ".md");
 
-  // 코드 블록 제거 후 순수 텍스트 추출 (검색 품질 개선)
+  // Remove code blocks, then extract plain text (improve search quality)
   let textContent = content.replace(/```[\s\S]*?```/g, "");
-  textContent = textContent.replace(/^#{1,6}\s+.+$/gm, "");   // heading 제거
-  textContent = textContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // 링크 텍스트만 남김
-  textContent = textContent.replace(/[|_\`\*\~]/g, "");       // markdown 구문 정리
+  textContent = textContent.replace(/^#{1,6}\s+.+$/gm, "");   // remove headings
+  textContent = textContent.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // keep only link text
+  textContent = textContent.replace(/[|_\`\*\~]/g, "");       // clean up markdown syntax
   textContent = textContent.replace(/\n{2,}/g, "\n").trim();
 
   const relPath = path.relative(ROOT, filePath);
 
-  // uid: 특수문자 제거 (Meilisearch document ID는 alphanumeric, hyphen, underscore만 허용)
+  // uid: remove special characters (Meilisearch document ID only allows alphanumeric, hyphen, underscore)
   const safeUid = `${source}_${relPath.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   return {
@@ -279,7 +279,7 @@ async function main() {
     console.log("");
   }
 
-  // ── Code structure indexing (Meilisearch — 파일 메타데이터) ─────
+  // ── Code structure indexing (Meilisearch — file metadata) ──────
   console.log("--- Indexing code structure ---");
 
   const structScript = path.join(path.dirname(new URL(import.meta.url).pathname), "indexCodeStructure.js");
