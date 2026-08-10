@@ -18,7 +18,7 @@
         "HTTP_PORT": "3900",
         "MEILI_HOST": "http://localhost:7700",
         "MEILI_INDEX": "docs_plans",
-        "MEILI_MASTER_KEY": "udanax_meilisearch_2024_production_key",
+        "MEILI_MASTER_KEY": "<your-meili-master-key>",
         "CONTEXT_API_TOKEN": "focus-memory-local",
         "FOCUS_LOG_FILE": "/tmp/focus-memory.log"
       }

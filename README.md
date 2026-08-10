@@ -23,7 +23,7 @@ FocusMemory turns your workspace into a **living knowledge base** for AI coding 
 
 Think of it as an **onboarding process your agent never forgets**: new sessions start with full context about past decisions, architectural rationale, code dependencies, and how the system evolved — without burning tokens on repetitive file discovery.
 
-> **Token waste in source exploration** is the hidden cost of AI-assisted development. An agent without memory repeats this loop: grep → read → reason → retry. Each round-trip burns context tokens, inflates VRAM, and adds latency. FocusMemory replaces on-demand discovery with **pre-indexed recall + scoring-based routing**, cutting average tool calls per query from 3.5 to 1.8 (~49% reduction) and response time from 25s to 8s (~68%).
+> **Token waste in source exploration** is the hidden cost of AI-assisted development. An agent without memory repeats this loop: grep → read → reason → retry. Each round-trip burns context tokens, inflates VRAM, and adds latency. FocusMemory replaces on-demand discovery with **pre-indexed recall + scoring-based routing**, dramatically reducing tool calls and response time (see benchmark below).
 
 <br>
 
@@ -57,7 +57,9 @@ An AI agent without pre-indexed memory repeats this loop: grep → read → reas
 
 **Net effect**: average tool calls per query 3.5 → 1.8 (~49%), response time 25s → 8s (~68%).
 
-### Remaining improvement
+> *Benchmark methodology: measured on a mid-size PHP/JS codebase (~200k LOC, ~1,500 files) with 50 representative queries (causal reasoning, code graph lookup, project fact retrieval). Tool calls and latency averaged across 3 runs. Individual results vary by project size and query complexity.*
+
+### Remaining improvements
 
 1. **Auto-commit via session end hook** — The Qwen Code extension's HTTP hook could detect when a coding task completes (tests pass, PR merged) and auto-extract decisions from the chat transcript. A lightweight LLM prompt summarizes key decisions, infers `topic_key`, and calls `remember_decision` without agent intervention. Currently the Hard Gate in AGENTS.md instructs agents to call `remember_decision` manually at task end; full automation awaits transcript access from the ACP host.
 
@@ -148,13 +150,7 @@ Configure your client (Qwen Code, Kilo Code) to connect via stdio transport and 
 
 ### 6. Enable extension in VS Code IDE (not needed for CLI)
 
-If you're using Qwen Code inside VS Code IDE, you need to explicitly enable the extension in `extension-enablement.json` for the AGENTS.md Hard Gate to work:
-
-```bash
-echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
-```
-
-This step isn't needed in CLI mode, where the extension loads automatically. But without it in VS Code IDE, MCP tools like `search_memory` won't get injected into the system prompt, and the Hard Gate stays disabled.
+See **Extension Installation → Step 4** below for the `extension-enablement.json` setup. This step is only required when running Qwen Code inside VS Code IDE; CLI mode loads extensions automatically.
 
 ### 7. Open Dashboard (optional)
 
@@ -276,36 +272,26 @@ QDRANT_URL=http://localhost:6333 npm run build-graph /path/to/your/project
 
 **2. Install the extension:**
 
-`${extensionPath}` resolves to the directory containing `qwen-extension.json`. Install by symlinking the FocusMemory root into your extensions folder:
+Symlink the entire FocusMemory directory into your extensions folder — `${extensionPath}` resolves to wherever `qwen-extension.json` lives:
 
 ```bash
-mkdir -p ~/.qwen/extensions/focus-memory
-
-# Symlink key files — ${extensionPath} will resolve to ~/.qwen/extensions/focus-memory/
-ln -sf /path/to/FocusMemory/qwen-extension.json \
-       ~/.qwen/extensions/focus-memory/qwen-extension.json
-ln -sf /path/to/FocusMemory/AGENTS.md \
-       ~/.qwen/extensions/focus-memory/AGENTS.md
-ln -sf /path/to/FocusMemory/index.js \
-       ~/.qwen/extensions/focus-memory/index.js
-ln -sf /path/to/FocusMemory/qwen-code-extension \
-       ~/.qwen/extensions/focus-memory/qwen-code-extension
+mkdir -p ~/.qwen/extensions
+ln -sf /path/to/FocusMemory ~/.qwen/extensions/focus-memory
 ```
 
-This ensures all `${extensionPath}` references resolve correctly:
-- `${extensionPath}${/}index.js` → MCP server entry point
-- `${extensionPath}${/}qwen-code-extension${/}hooks${/}` → Hard Gate hook scripts
+This ensures all `${extensionPath}` references resolve correctly (index.js, hooks/, etc.) and avoids broken links when new files are added.
 
-> **Note:** If you prefer a non-symlink install, copy the files instead:
+> **Note:** If you prefer a non-symlink install, copy the directory instead:
 > ```bash
-> cp /path/to/FocusMemory/qwen-extension.json ~/.qwen/extensions/focus-memory/
-> cp /path/to/FocusMemory/AGENTS.md ~/.qwen/extensions/focus-memory/
-> cp /path/to/FocusMemory/index.js ~/.qwen/extensions/focus-memory/
-> cp -r /path/to/FocusMemory/qwen-code-extension ~/.qwen/extensions/focus-memory/
+> cp -r /path/to/FocusMemory ~/.qwen/extensions/focus-memory
 > ```
 > (You'll need to re-copy when updating FocusMemory.)
 
 **3. Start FocusMemory server:**
+
+> **qwen-code users: skip this step.** The extension's `mcpServers.focus-memory` automatically spawns `node index.js` via stdio when qwen-code starts. Starting it manually would cause port conflicts on HTTP_PORT (3900) and DASHBOARD_PORT (8891).
+
+For Kilo Code or other clients without extension support:
 ```bash
 cd /path/to/FocusMemory
 QDRANT_URL=http://localhost:6333 \
@@ -419,18 +405,21 @@ FocusMemory/
 ├── config/                 # Configuration files
 │   └── com.focusmemory.autoingest.plist  # launchd cron job
 ├── logs/                   # Auto-generated state & log files (gitignored)
-├── qwen-code-extension/    # Qwen Code extension (manifest + AGENTS.md)
-│   ├── qwen-extension.json # Extension manifest (mcpServers + hooks)
+├── qwen-code-extension/    # Qwen Code extension source (manifest + AGENTS.md)
+│   ├── qwen-extension.json # Extension manifest source (mcpServers + hooks)
 │   ├── AGENTS.md           # Hard Gate search protocol rules
 │   └── hooks/              # PreToolUse hook scripts
 │       ├── check-memory-first.js
 │       ├── log-tool-call.js
 │       └── reset-memory-flag.js
-├── qwen-extension.json     # Extension manifest (root copy for discovery)
-├── AGENTS.md               # Hard Gate rules (root copy for discovery)
+├── qwen-extension.json     # Root copy — symlink install requires this at directory top level
+├── AGENTS.md               # Root copy — same reason, keeps extension self-contained
+├── LICENSE                 # MIT license
 ├── package.json
 └── README.md
 ```
+
+> **Why root copies?** When you `ln -sf /path/to/FocusMemory ~/.qwen/extensions/focus-memory`, qwen-code expects `qwen-extension.json` at the symlink target's top level. The `qwen-code-extension/` directory contains the source; root copies ensure the extension loads correctly without nested path resolution.
 
 <br>
 
