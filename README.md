@@ -156,6 +156,30 @@ echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
 
 This step isn't needed in CLI mode, where the extension loads automatically. But without it in VS Code IDE, MCP tools like `search_memory` won't get injected into the system prompt, and the Hard Gate stays disabled.
 
+### 7. Open Dashboard (optional)
+
+When the MCP server starts on port 3900, a **dashboard UI** also launches on port **8891**:
+
+```
+http://localhost:8891
+```
+
+The dashboard shows real-time stats from your Qdrant and Meilisearch backends:
+
+| Metric | Source |
+|---|---|
+| Total Points / Collections | Qdrant (`work_memory`, `code_chunks`, etc.) |
+| Documents / Indexes | Meilisearch (docs/plans, code structure) |
+| System Info | Node version, uptime, service versions |
+
+The page auto-refreshes every 30 seconds. Customize the port via `DASHBOARD_PORT` environment variable:
+
+```bash
+DASHBOARD_PORT=9100 npm start  # Dashboard on port 9100 instead of 8891
+```
+
+JSON stats are also available at `http://localhost:8891/api/stats` and `http://localhost:3900/api/stats`.
+
 <br>
 
 ---
@@ -243,6 +267,9 @@ FocusMemory/
 │   ├── buildGraph.js       # tree-sitter JS + regex TS/PHP → function nodes + call edges
 │   ├── indexCodeStructure.js  # MeiliSearch code structure indexer
 │   └── testSearch.js       # Search test CLI
+├── web/                    # Dashboard UI (port 8891)
+│   ├── dashboard.html      # Real-time Qdrant/Meilisearch stats dashboard
+│   └── index.html          # Main landing page
 ├── config/                 # Configuration files
 │   └── com.focusmemory.autoingest.plist  # launchd cron job
 ├── logs/                   # Auto-generated state & log files (gitignored)

@@ -1,0 +1,499 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FocusMemory Dashboard</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --surface-2: #1e1e1e;
+    --border: #2a2a2a;
+    --text: #e8e8e8;
+    --text-dim: #888;
+    --accent: #ff6b25;
+    --accent-glow: rgba(255, 107, 37, 0.15);
+    --green: #4ade80;
+    --red: #f87171;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+
+  .container {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 40px 24px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 48px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .logo-icon {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    color: #0a0a0a;
+    font-size: 14px;
+  }
+
+  .logo h1 {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  .status-badge {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 14px;
+    border-radius: 99px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .status-dot.error {
+    background: var(--red);
+    animation: none;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* Section */
+  .section-title {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--accent);
+    margin-bottom: 16px;
+    font-weight: 600;
+  }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+
+  /* Card */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+
+  .card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+
+  .card-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .card-tag {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .card-tag.vector { background: rgba(255, 107, 37, 0.15); color: #ff6b25; }
+  .card-tag.fulltext { background: rgba(74, 222, 128, 0.15); color: #4ade80; }
+
+  .card-stats {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .stat {
+    background: var(--surface-2);
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .stat-value.accent { color: var(--accent); }
+
+  /* Summary bar */
+  .summary-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+
+  .summary-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    text-align: center;
+  }
+
+  .summary-value {
+    font-size: 36px;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1.2;
+  }
+
+  .summary-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* System info */
+  .system-info {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin-bottom: 32px;
+  }
+
+  .info-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 16px;
+  }
+
+  .info-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 14px;
+  }
+
+  .info-item:last-child { border-bottom: none; }
+
+  .info-key { color: var(--text-dim); }
+  .info-val { color: var(--text); font-weight: 500; }
+
+  /* Loading / error */
+  .loading {
+    text-align: center;
+    padding: 80px 24px;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+
+  .spinner {
+    width: 32px;
+    height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 16px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-box {
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.3);
+    color: var(--red);
+    padding: 16px 20px;
+    border-radius: 8px;
+    margin-bottom: 24px;
+    font-size: 14px;
+  }
+
+  /* Responsive */
+  @media (max-width: 640px) {
+    .summary-bar { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: 1fr; }
+    header { flex-direction: column; gap: 16px; align-items: flex-start; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">FM</div>
+      <h1>FocusMemory Dashboard</h1>
+    </div>
+    <div class="status-badge" id="statusBadge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Connecting...</span>
+    </div>
+  </header>
+
+  <div id="errorBox" class="error-box" style="display:none"></div>
+
+  <!-- Summary -->
+  <div class="summary-bar" id="summaryBar">
+    <div class="summary-item">
+      <div class="summary-value" id="totalQdrantPoints">-</div>
+      <div class="summary-label">Total Points</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-value" id="qdrantCollections">-</div>
+      <div class="summary-label">Qdrant Collections</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-value" id="totalMeiliDocs">-</div>
+      <div class="summary-label">Meilisearch Docs</div>
+    </div>
+    <div class="summary-item">
+      <div class="summary-value" id="meiliIndexes">-</div>
+      <div class="summary-label">Meili Indexes</div>
+    </div>
+  </div>
+
+  <!-- Qdrant Collections -->
+  <div class="section-title">Qdrant Collections</div>
+  <div class="grid" id="qdrantGrid">
+    <div class="loading"><div class="spinner"></div>Loading collections...</div>
+  </div>
+
+  <!-- Meilisearch Indexes -->
+  <div class="section-title">Meilisearch Indexes</div>
+  <div class="grid" id="meiliGrid">
+    <div class="loading"><div class="spinner"></div>Loading indexes...</div>
+  </div>
+
+  <!-- System Info -->
+  <div class="section-title">System Info</div>
+  <div class="system-info">
+    <div class="info-grid" id="systemInfo">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API_BASE = ''; // same origin, served by index.js
+
+async function fetchStats() {
+  const errors = [];
+
+  try {
+    const res = await fetch(API_BASE + '/api/stats');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // Status badge
+    document.getElementById('statusDot').className = 'status-dot';
+    document.getElementById('statusText').textContent = 'Online';
+
+    renderSummary(data);
+    renderQdrant(data.qdrant || {});
+    renderMeili(data.meilisearch || {});
+    renderSystemInfo(data.system || {});
+  } catch (err) {
+    errors.push(err.message);
+    showError(errors.join('; '));
+  }
+
+  return { errors };
+}
+
+function showError(msg) {
+  const box = document.getElementById('errorBox');
+  box.textContent = msg;
+  box.style.display = 'block';
+  document.getElementById('statusDot').className = 'status-dot error';
+  document.getElementById('statusText').textContent = 'Error';
+}
+
+function renderSummary(data) {
+  const qdrantTotal = Object.values(data.qdrant?.collections || {})
+    .reduce((sum, c) => sum + (c.count || 0), 0);
+  const meiliTotal = Object.values(data.meilisearch?.indexes || {})
+    .reduce((sum, idx) => sum + (idx.documentCount || 0), 0);
+
+  document.getElementById('totalQdrantPoints').textContent = formatNum(qdrantTotal);
+  document.getElementById('qdrantCollections').textContent = Object.keys(data.qdrant?.collections || {}).length;
+  document.getElementById('totalMeiliDocs').textContent = formatNum(meiliTotal);
+  document.getElementById('meiliIndexes').textContent = Object.keys(data.meilisearch?.indexes || {}).length;
+}
+
+function renderQdrant(qd) {
+  const grid = document.getElementById('qdrantGrid');
+  const collections = qd.collections || {};
+
+  if (Object.keys(collections).length === 0) {
+    grid.innerHTML = '<div class="loading">No Qdrant collections found</div>';
+    return;
+  }
+
+  grid.innerHTML = Object.entries(collections).map(([name, info]) => `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">${esc(name)}</span>
+        <span class="card-tag vector">Vector</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Points</div>
+          <div class="stat-value accent">${formatNum(info.count || 0)}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Vector Size</div>
+          <div class="stat-value">${info.vectorSize || '-'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Vectors</div>
+          <div class="stat-value">${formatNum(info.vectors || 0)}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Index Status</div>
+          <div class="stat-value" style="font-size:14px">${esc(info.indexedOrStatus || 'ok')}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderMeili(mi) {
+  const grid = document.getElementById('meiliGrid');
+  const indexes = mi.indexes || {};
+
+  if (Object.keys(indexes).length === 0) {
+    grid.innerHTML = '<div class="loading">No Meilisearch indexes found</div>';
+    return;
+  }
+
+  grid.innerHTML = Object.entries(indexes).map(([name, info]) => `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">${esc(name)}</span>
+        <span class="card-tag fulltext">Full-text</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Documents</div>
+          <div class="stat-value accent">${formatNum(info.documentCount || 0)}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Field Count</div>
+          <div class="stat-value">${info.fieldCount || '-'}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Indexed Docs</div>
+          <div class="stat-value">${formatNum(info.indexedDocumentCount || 0)}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Is Indexing</div>
+          <div class="stat-value" style="font-size:14px">${info.isIndexing ? 'Yes' : 'No'}</div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderSystemInfo(sys) {
+  const el = document.getElementById('systemInfo');
+  const entries = Object.entries(sys);
+
+  if (entries.length === 0) {
+    el.innerHTML = '<div class="loading">No system info</div>';
+    return;
+  }
+
+  el.innerHTML = entries.map(([key, val]) => `
+    <div class="info-item">
+      <span class="info-key">${esc(key)}</span>
+      <span class="info-val">${esc(String(val))}</span>
+    </div>
+  `).join('');
+}
+
+function formatNum(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return (n / 1_000).toFixed(1) + 'K';
+  return String(n);
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// Initial load + auto-refresh every 30s
+fetchStats();
+setInterval(fetchStats, 30_000);
+</script>
+</body>
+</html>

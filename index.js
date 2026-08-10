@@ -1678,6 +1678,122 @@ httpApp.post("/v1/context/search", async (c) => {
   return c.json({ hookEventName: "UserPromptSubmit", additionalContext });
 });
 
+// ─── Dashboard: shared stats collector (used by both HTTP port and dashboard) ───
+
+async function collectDashboardStats() {
+  const stats = { qdrant: {}, meilisearch: {}, system: {} };
+
+  // Qdrant collections
+  try {
+    const colls = await qdrant.getCollections();
+    const collectionList = colls.collections || [];
+    stats.qdrant.collections = {};
+    for (const col of collectionList) {
+      const info = col.status || {};
+      const name = col.name;
+      let count = 0;
+      try {
+        const countRes = await qdrant.count(name, { exact: {} });
+        count = countRes.count ?? 0;
+      } catch {
+        count = info.points_count || info.vectors_count || 0;
+      }
+      stats.qdrant.collections[name] = {
+        count,
+        vectors: info.vectors_count || count,
+        indexedOrStatus: info.indexed_vectors || "ok",
+      };
+    }
+  } catch (err) {
+    stats.qdrant.error = err.message;
+  }
+
+  // Meilisearch indexes
+  try {
+    if (MEILI_MASTER_KEY) {
+      const meiliClientForDash = new Meilisearch({ host: MEILI_HOST, apiKey: MEILI_MASTER_KEY });
+      const indexList = await meiliClientForDash.getIndexes().catch(() => ({ results: [] }));
+      stats.meilisearch.indexes = {};
+      for (const idx of (indexList.results || [])) {
+        stats.meilisearch.indexes[idx.uid] = {
+          documentCount: idx.numberOfDocuments || 0,
+          fieldCount: idx.fieldDistribution ? Object.keys(idx.fieldDistribution).length : 0,
+          indexedDocumentCount: idx.numberOfDocuments || 0,
+          isIndexing: false,
+        };
+      }
+    } else {
+      stats.meilisearch.error = "MEILI_MASTER_KEY not set";
+    }
+  } catch (err) {
+    stats.meilisearch.error = err.message;
+  }
+
+  // System info — Qdrant version
+  try {
+    const qdInfo = await fetch(QDRANT_URL + "/").catch(() => null);
+    const qdJson = qdInfo ? await qdInfo.json().catch(() => ({})) : {};
+    stats.system.qdrant_version = qdJson.version || "unknown";
+  } catch {
+    stats.system.qdrant_status = "unreachable";
+  }
+
+  // System info — Meilisearch version
+  try {
+    const msInfo = await fetch(MEILI_HOST + "/").catch(() => null);
+    const msJson = msInfo ? await msInfo.json().catch(() => ({})) : {};
+    stats.system.meilisearch_version = msJson.version || "unknown";
+  } catch {
+    stats.system.meilisearch_status = "unreachable";
+  }
+
+  stats.system.node_version = process.version;
+  stats.system.uptime = `${Math.floor(process.uptime() / 60)}m`;
+
+  return stats;
+}
+
+// ─── Dashboard API: /api/stats (on main HTTP port) ───
+
+httpApp.get("/api/stats", async (c) => {
+  const stats = await collectDashboardStats();
+  return c.json(stats);
+});
+
+// ─── Dashboard UI: serve on port 8891 ───
+
+const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "8891", 10);
+try {
+  const fsSync = await import("fs");
+  const dashboardHtml = fsSync.default.readFileSync("./web/dashboard.html", "utf-8");
+
+  const dashApp = new Hono();
+  dashApp.get("/", (c) => c.html(dashboardHtml));
+  dashApp.get("/api/stats", async (cD) => {
+    const stats = await collectDashboardStats();
+    return cD.json(stats);
+  });
+
+  const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort });
+  console.error(`[FocusMemory] Dashboard UI listening on :${dashboardPort}`);
+
+  if (dashServer && typeof dashServer.on === "function") {
+    dashServer.on("error", (err) => {
+      if (err.code === "EADDRINUSE") {
+        console.error(`[FocusMemory] Dashboard port ${dashboardPort} already in use`);
+      } else {
+        console.error("[FocusMemory] Dashboard server error:", err.message);
+      }
+    });
+  }
+} catch (err) {
+  if (err.code === "EADDRINUSE") {
+    console.error(`[FocusMemory] Dashboard port ${dashboardPort} already in use`);
+  } else {
+    console.error("[FocusMemory] Dashboard server failed:", err.message);
+  }
+}
+
 // ─── Start servers ───
 
 const banner = [
