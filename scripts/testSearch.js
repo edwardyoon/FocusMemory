@@ -28,12 +28,12 @@ async function embed(text) {
 
 async function search(collection, query, limit = 5) {
   const vector = await embed(query);
-  const results = await qdrant.search(collection, {
-    vector,
+  const result = await qdrant.query(collection, {
+    query: vector,
     limit,
     with_payload: true,
   });
-  return results.map((r) => ({ ...r, _collection: collection }));
+  return (result.points || []).map((p) => ({ id: p.id, score: p.score ?? 0, payload: p.payload, _collection: collection }));
 }
 
 /**
