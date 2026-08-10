@@ -72,9 +72,17 @@ The `PreToolUse` hook closes this gap. `grep_search`/`glob` calls are denied at 
 
 The benchmark numbers above reflect the **hard gate active** state. Without enforcement, savings are model-dependent and unreliable.
 
-### Remaining improvements
+### Write-back enforcement (Stop hook)
 
-1. **Auto-commit via session end hook** — The Qwen Code extension's HTTP hook could detect when a coding task completes (tests pass, PR merged) and auto-extract decisions from the chat transcript. A lightweight LLM prompt summarizes key decisions, infers `topic_key`, and calls `remember_decision` without agent intervention. Currently the Hard Gate in AGENTS.md instructs agents to call `remember_decision` manually at task end; full automation awaits transcript access from the ACP host.
+FocusMemory now enforces write-back symmetry with read-side enforcement. The `Stop` hook fires once per turn when the model finishes its response, detecting completion signals (`last_assistant_message`) combined with code changes in the tool log — then asks the user whether to record decisions via `remember_decision`. This turns "forgetting to save important work" from a prompt-level reminder into a system-level checkpoint.
+
+| Signal | Source | Example |
+|---|---|---|
+| Code change detected | Tool log (`edit`, `write_file`) | Any file modification in the turn |
+| Completion signal | `last_assistant_message` patterns | "테스트 통과", "버그 수정됨", "ready to commit" |
+| User confirmation | `decision: ask` → user responds | "예" → `remember_decision` called; "아니오" → skipped, no re-ask on same work unit |
+
+The write-back gate is conservative by design — both a code change AND a completion signal must be present. The user has final say via the `ask` decision, eliminating false positives that plague fully automated approaches. Once recorded (or explicitly declined), the flag persists across turns until new code edits start a fresh work unit.
 
 <br>
 
@@ -215,7 +223,10 @@ qwen-code (upstream — zero modifications)
     │       ├── UserPromptSubmit (HTTP)  → auto-recall context from Qdrant
     │       ├── UserPromptSubmit (cmd)   → reset Hard Gate flag each turn
     │       ├── PreToolUse search_memory → set memoryCalled flag
-    │       └── PreToolUse grep_search/glob → deny if flag not set
+    │       ├── PreToolUse remember_decision → set decisionRecorded flag
+    │       ├── PreToolUse edit/write_file → track code changes, clear decline flag
+    │       ├── PreToolUse grep_search/glob → deny if flag not set
+    │       └── Stop                     → check-writeback (completion + ask)
     │
     └── AGENTS.md                    → Hard Gate search protocol
 
@@ -252,9 +263,17 @@ User prompt submitted
   │
   ▼
 [Code Work] grep / read / edit / test — normal qwen-code tools
+  │ (edit/write_file logged → code change tracked, decline flag cleared)
   │
   ▼
 [Write-back] remember_decision records outcome to Qdrant
+  │ (PreToolUse logs → decisionRecorded = true, persists across turns)
+  │
+  ▼
+[Stop hook — turn end] check-writeback.js fires once per turn
+  → Reads tool log: code change? Reads message: completion signal?
+  → Both yes + !decisionRecorded + !decisionDeclined → ask user
+  → "예" → remember_decision called; "아니오" → decisionDeclined set, no re-ask on same work unit
 ```
 
 ### Hard Gate enforcement levels
@@ -263,9 +282,12 @@ User prompt submitted
 |-------|-----------|-------------|
 | **Initial prompt** | `UserPromptSubmit` HTTP hook fires before agent loop starts | ✅ System-level — model cooperation not required |
 | **Mid-turn (PreToolUse)** | `grep_search`/`glob` blocked until `search_memory` called | ✅ Physical block — returns `permissionDecision: deny` |
+| **Turn end (Stop)** | Completion signal + code change detected → user asked to record decision | ✅ System-level checkpoint with user confirmation (`ask`) |
 | **Mid-workflow** | AGENTS.md instructs "search_memory first" | ⚠️ Prompt-level suggestion — model may ignore |
 
-The PreToolUse hook enforces the Hard Gate at the system level. When an agent attempts to call `grep_search` or `glob` without calling `search_memory` first, the hook returns a deny decision with the reason message: `[Hard Gate] Call mcp__focus-memory__search_memory before using grep_search/glob.`
+The PreToolUse hook enforces the read-side Hard Gate at the system level. When an agent attempts to call `grep_search` or `glob` without calling `search_memory` first, the hook returns a deny decision with the reason message: `[Hard Gate] Call mcp__focus-memory__search_memory before using grep_search/glob.`
+
+The Stop hook enforces write-back symmetry at the turn boundary. It fires once per turn after the model finishes its response, checking for both code changes (`edit`/`write_file` in tool log) and completion signals (patterns like "테스트 통과", "버그 수정됨" in `last_assistant_message`). When both are present and no decision has been recorded yet, it asks the user via `decision: ask` — giving final control to the human while preventing forgotten write-backs.
 
 ### Installation
 
@@ -324,22 +346,36 @@ CLI mode loads extensions automatically — this step is not required.
 
 ### Hard Gate hook scripts
 
-The PreToolUse hooks require three Node.js scripts in `qwen-code-extension/hooks/`:
+The PreToolUse and Stop hooks use four Node.js scripts in `qwen-code-extension/hooks/`:
 
 | Script | Trigger | Action |
 |--------|---------|--------|
-| `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Set `memoryCalled = false` |
-| `log-tool-call.js` | PreToolUse `search_memory` | Set `memoryCalled = true`, allow |
+| `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Set `memoryCalled = false`; preserve `decisionRecorded`/`decisionDeclined` across turns |
+| `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Track flags: `memoryCalled=true`, `decisionRecorded=true`, clear `decisionDeclined` on new code edits |
 | `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow |
+| `check-writeback.js` | Stop (once per turn at end) | If code change + completion signal + !decisionRecorded → ask user; else allow |
 
-Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`. Output format: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`.
+Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`.
+
+**State file format:**
+```json
+{ "memoryCalled": false, "decisionRecorded": false }
+```
+
+- `memoryCalled`: reset every turn (read-side gate)
+- `decisionRecorded`: persists across turns until cleared by new code edits (write-back tracking)
+- `decisionDeclined`: set when user declines; cleared on next `edit`/`write_file` to allow re-asking for new work units
+
+**Output formats:**
+- PreToolUse: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`
+- Stop: `{ decision: "allow" }` or `{ decision: "ask", reason: "...", stopReason: "..." }`
 
 ### Design principles
 
 1. **Zero upstream modifications** — Uses only qwen-code's native Extension and Hook system. Upgrades to qwen-code are safe; only the manifest may need adjustment if extension specs change.
-2. **Hard Gate is enforced, not suggested** — The HTTP hook guarantees context injection at session start. PreToolUse hooks physically block grep/glob until search_memory runs. Mid-workflow rules in AGENTS.md provide guidance with conditional re-search to minimize token waste.
+2. **Hard Gate is enforced, not suggested** — The HTTP hook guarantees context injection at session start. PreToolUse hooks physically block grep/glob until search_memory runs (read-side). Stop hooks detect completion signals and ask the user to record decisions (write-side), with `decision: ask` giving final control to prevent false positives. Mid-workflow rules in AGENTS.md provide guidance with conditional re-search to minimize token waste.
 3. **Stay out of the inference path** — FocusMemory provides context before prompt assembly. Inference happens directly between client and model. No added latency during tool execution.
-4. **Write-back is part of the loop** — Read-only memory is half-baked. `remember_decision` records outcomes to Qdrant so future sessions build on past work instead of repeating it.
+4. **Write-back is enforced, not optional** — Read-only memory is half-baked. The Stop hook ensures `remember_decision` is called when work completes, recording outcomes to Qdrant so future sessions build on past work instead of repeating it. User confirmation via `ask` prevents forced recordings on non-completion turns.
 
 <br>
 
@@ -421,10 +457,11 @@ FocusMemory/
 ├── qwen-code-extension/    # Qwen Code extension source (manifest + AGENTS.md)
 │   ├── qwen-extension.json # Extension manifest source (mcpServers + hooks)
 │   ├── AGENTS.md           # Hard Gate search protocol rules
-│   └── hooks/              # PreToolUse hook scripts
-│       ├── check-memory-first.js
-│       ├── log-tool-call.js
-│       └── reset-memory-flag.js
+│   └── hooks/              # PreToolUse + Stop hook scripts
+│       ├── check-memory-first.js  # PreToolUse: deny grep/glob if memory not called
+│       ├── check-writeback.js     # Stop: detect completion, ask to record decision
+│       ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
+│       └── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
 ├── qwen-extension.json     # Root copy — symlink install requires this at directory top level
 ├── AGENTS.md               # Root copy — same reason, keeps extension self-contained
 ├── LICENSE                 # MIT license

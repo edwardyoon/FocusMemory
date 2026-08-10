@@ -67,6 +67,28 @@
         ]
       },
       {
+        "matcher": "^mcp__focus-memory__remember_decision$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}log-tool-call.js",
+            "name": "log-remember-decision",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "^(edit|write_file)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}log-tool-call.js",
+            "name": "log-code-change",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
         "matcher": "^(grep_search|glob)$",
         "hooks": [
           {
@@ -74,6 +96,19 @@
             "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}check-memory-first.js",
             "name": "check-memory-first",
             "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "description": "Hard Gate (write-back) — detect completion signal and ask user to record decision via remember_decision",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}check-writeback.js",
+            "name": "check-writeback",
+            "timeout": 8000
           }
         ]
       }

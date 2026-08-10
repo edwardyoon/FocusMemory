@@ -1,11 +1,10 @@
 #!/usr/bin/env node
-// PreToolUse hook — when search_memory is called, set memoryCalled flag to true
-// State file: {STATE_DIR}/{session_id}.json → { memoryCalled: boolean }
+// PreToolUse hook — log tool calls and track state flags for Hard Gate enforcement
+// Handles: search_memory (memoryCalled), remember_decision (decisionRecorded), code changes
 
 const fs = require('fs');
 const path = require('path');
 
-// State lives in ~/.qwen/tmp/tool-calls/ so it's per-user, not tied to where FocusMemory is cloned
 const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
 fs.mkdirSync(STATE_DIR, { recursive: true });
 
@@ -19,15 +18,44 @@ function main() {
   const sessionId = event.session_id;
   if (!sessionId) returnAllow();
 
-  // Set state flag — search_memory has been called this turn
+  const toolName = event.tool_name || 'unknown';
   const stateFile = path.join(STATE_DIR, `${sessionId}.json`);
+  const logFile = path.join(STATE_DIR, `${sessionId}.jsonl`);
+
+  // Read current state (or create empty)
+  let state = {};
   try {
-    fs.writeFileSync(stateFile, JSON.stringify({ memoryCalled: true }));
+    if (fs.existsSync(stateFile)) {
+      state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    }
   } catch {}
 
-  // Audit log (optional)
-  const toolName = event.tool_name || 'unknown';
-  const logFile = path.join(STATE_DIR, `${sessionId}.jsonl`);
+  // --- Flag updates based on tool name ---
+
+  // search_memory called → mark as memory-called this turn
+  if (toolName === 'mcp__focus-memory__search_memory') {
+    state.memoryCalled = true;
+  }
+
+  // remember_decision called → mark decision recorded for session
+  if (toolName.includes('remember_decision')) {
+    state.decisionRecorded = true;
+    // Clear decline flag since user chose to record
+    delete state.decisionDeclined;
+  }
+
+  // Code change tools — track and reset decline flag on new work
+  if (['edit', 'write_file'].includes(toolName)) {
+    // New code edit means a new work unit started — clear old decline so we can ask again later
+    delete state.decisionDeclined;
+  }
+
+  // Write updated state
+  try {
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+  } catch {}
+
+  // Append to audit log (jsonl)
   const line = JSON.stringify({ tool: toolName, ts: Date.now() }) + '\n';
   try { fs.appendFileSync(logFile, line); } catch {}
 
