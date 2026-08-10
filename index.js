@@ -35,6 +35,23 @@ const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 
 const qdrant = new QdrantClient({ url: QDRANT_URL });
 
+/**
+ * Compatibility wrapper for Qdrant v1.x — replaces the deleted search() API.
+ * Old API:  qdrant.search(col, { vector, filter, limit, with_payload, score_threshold }) → [{ id, score, payload }]
+ * New API:  qdrant.query(col,  { query, ...rest }) → { points: [{ id, score, payload }] }
+ */
+async function qSearch(collection, opts = {}) {
+  const { vector, filter, limit, with_payload, score_threshold } = opts;
+  const result = await qdrant.query(collection, {
+    query: vector,
+    ...(filter && { filter }),
+    ...(limit != null && { limit }),
+    ...(with_payload && { with_payload }),
+    ...(score_threshold != null && { score_threshold }),
+  });
+  return (result.points || []).map((p) => ({ id: p.id, score: p.score ?? 0, payload: p.payload }));
+}
+
 // Meilisearch client for docs/plans text search
 let meiliIndex = null;
 if (MEILI_MASTER_KEY) {
@@ -244,7 +261,7 @@ server.registerTool(
     if (chainTarget === "decision_chains") {
       const vector = await embed(query);
       if (vector) {
-        const hits = await qdrant.search("decision_chains", { vector, limit: 1 });
+        const hits = await qSearch("decision_chains", { vector, limit: 1 });
         if (hits.length > 0 && hits[0]?.payload?.decision_id) {
           chainOutput = await traceChainInternal(hits[0].payload.decision_id);
         }
@@ -266,7 +283,7 @@ server.registerTool(
       const vector = await embed(query);
 
       const searches = vectorTargets.map(async (col) => {
-        const results = await qdrant.search(col, {
+        const results = await qSearch(col, {
           vector,
           limit: perCollectionLimit,
           with_payload: true,
@@ -338,7 +355,7 @@ server.registerTool(
           try {
             const fbVector = await embed(query);
             if (fbVector) {
-              const fbResults = await qdrant.search(fb, { vector: fbVector, limit: 5, with_payload: true });
+              const fbResults = await qSearch(fb, { vector: fbVector, limit: 5, with_payload: true });
               allResults.push(...fbResults.map(r => ({ ...r, _collection: fb })));
             }
           } catch {}
@@ -619,9 +636,7 @@ server.registerTool(
       "Search past session work history, decisions, and unresolved issues. Always call this before starting coding tasks.",
     inputSchema: {
       query: z.string().describe("Topic or task to search for"),
-      project: z
-        .enum(["업체창고", "골목창고", "llm_infra", "kilo_setup"])
-        .optional(),
+      project: z.string().optional().describe("Project name filter (e.g. my-app, backend). Omit to search all projects."),
       status: z.enum(["open", "resolved", "any"]).optional().default("open"),
     },
   },
@@ -637,7 +652,7 @@ server.registerTool(
         const must = [];
         if (project) must.push({ key: "project", match: { value: project } });
         if (status !== "any") must.push({ key: "status", match: { value: status } });
-        qdrantResults = await qdrant.search("work_memory", {
+        qdrantResults = await qSearch("work_memory", {
           vector,
           filter: must.length ? { must } : undefined,
           limit: 5,
@@ -692,7 +707,7 @@ server.registerTool(
       summary_text: z.string().describe("Brief summary of the decision"),
       detail: z.string().optional().default("").describe("Detailed explanation"),
       reasoning: z.string().optional().default("").describe("Why this decision was made (causal reasoning)"),
-      project: z.enum(["업체창고", "골목창고", "llm_infra", "kilo_setup"]).default("업체창고"),
+      project: z.string().optional().default("").describe("Project name (e.g. my-app, backend). Leave empty if not applicable."),
       type: z.enum(["decision", "bug_resolved", "todo"]).default("decision"),
       related_files: z.array(z.string()).optional().default([]),
       topic_key: z.string().optional().default("").describe("Key that groups decisions on the same topic (e.g. discount_threshold). Auto-inferred if empty."),
@@ -832,7 +847,7 @@ server.registerTool(
     if (!anchor && query) {
       const vector = await embed(query);
       if (vector) {
-        const hits = await qdrant.search("decision_chains", { vector, limit: 1 });
+        const hits = await qSearch("decision_chains", { vector, limit: 1 });
         anchor = hits[0]?.payload?.decision_id || null;
       }
     }
@@ -1175,7 +1190,7 @@ server.registerTool(
     if (entity_type) must.push({ key: "entity_type", match: { value: entity_type } });
 
     try {
-      const results = await qdrant.search("code_chunks", {
+      const results = await qSearch("code_chunks", {
         vector,
         filter: must.length > 0 ? { must } : undefined,
         score_threshold: min_score,
@@ -1304,7 +1319,7 @@ server.registerTool(
       try {
         const vector = await embed(filepath);
         if (vector) {
-          const chunkResults = await qdrant.search("code_chunks", {
+          const chunkResults = await qSearch("code_chunks", {
             vector,
             filter: { must: [{ key: "file_path", match: { value: filepath } }] },
             limit: chunk_limit,
@@ -1544,7 +1559,7 @@ async function doSearch(query) {
     const perCollectionLimit = 10;
 
     const searches = vectorTargets.map(async (col) => {
-      const results = await qdrant.search(col, {
+      const results = await qSearch(col, {
         vector,
         limit: perCollectionLimit,
         with_payload: true,
@@ -1568,7 +1583,7 @@ async function doSearch(query) {
   // Also search code_chunks for semantic code matches
   if (vector != null) {
     try {
-      const codeChunksResults = await qdrant.search("code_chunks", {
+      const codeChunksResults = await qSearch("code_chunks", {
         vector,
         limit: 5,
         score_threshold: 0.4,
