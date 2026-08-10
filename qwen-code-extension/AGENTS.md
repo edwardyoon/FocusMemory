@@ -8,7 +8,7 @@
 5. Code modification or answer
 
 ## Conditional Re-search Rules
-- If context was already injected by Hook (`## 검색 결과 (자동 주입)` header present),
+- If context was already injected by Hook (`## Search Results (Auto-injected)` header present),
   do NOT call `search_memory` again with the same keywords.
 - Only re-search when a new sub-question arises or initial results are insufficient.
 
