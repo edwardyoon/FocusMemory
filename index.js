@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
-dotenv.config({ override: true }); // .env takes priority — override settings.json env vars;
+import { fileURLToPath } from "url";
+const __dirname = new URL(".", import.meta.url).pathname;
+dotenv.config({ override: true, path: __dirname + ".env" }); // .env takes priority — absolute path so MCP stdio CWD doesn't matter
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
@@ -1683,25 +1685,25 @@ httpApp.post("/v1/context/search", async (c) => {
 async function collectDashboardStats() {
   const stats = { qdrant: {}, meilisearch: {}, system: {} };
 
-  // Qdrant collections
+  // Qdrant collections — use getCollection for accurate counts (SDK v1.x auto-unwraps result)
   try {
     const colls = await qdrant.getCollections();
     const collectionList = colls.collections || [];
     stats.qdrant.collections = {};
     for (const col of collectionList) {
-      const info = col.status || {};
       const name = col.name;
-      let count = 0;
+      let info = {};
       try {
-        const countRes = await qdrant.count(name, { exact: {} });
-        count = countRes.count ?? 0;
-      } catch {
-        count = info.points_count || info.vectors_count || 0;
-      }
+        info = await qdrant.getCollection(name);
+      } catch {}
+      // SDK v1.x already unwraps result, so info has points_count directly
+      const count = info.points_count || 0;
+      const indexedVectors = info.indexed_vectors_count || count;
       stats.qdrant.collections[name] = {
         count,
-        vectors: info.vectors_count || count,
-        indexedOrStatus: info.indexed_vectors || "ok",
+        vectors: indexedVectors,
+        vectorSize: (info.config?.params?.vectors?.size) || "-",
+        indexedOrStatus: info.status || "green",
       };
     }
   } catch (err) {
@@ -1765,7 +1767,7 @@ httpApp.get("/api/stats", async (c) => {
 const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "8891", 10);
 try {
   const fsSync = await import("fs");
-  const dashboardHtml = fsSync.default.readFileSync("./web/dashboard.html", "utf-8");
+  const dashboardHtml = fsSync.default.readFileSync(__dirname + "web/dashboard.html", "utf-8");
 
   const dashApp = new Hono();
   dashApp.get("/", (c) => c.html(dashboardHtml));
