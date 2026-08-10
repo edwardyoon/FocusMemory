@@ -23,7 +23,7 @@ FocusMemory turns your workspace into a **living knowledge base** for AI coding 
 
 Think of it as an **onboarding process your agent never forgets**: new sessions start with full context about past decisions, architectural rationale, code dependencies, and how the system evolved — without burning tokens on repetitive file discovery.
 
-> **Token waste in source exploration** is the hidden cost of AI-assisted development. An agent without memory repeats this loop: grep → read → reason → retry. Each round-trip burns context tokens, inflates VRAM, and adds latency. FocusMemory replaces on-demand discovery with **pre-indexed recall + scoring-based routing**, dramatically reducing tool calls and response time (see benchmark below).
+> **Token waste in source exploration** is the hidden cost of AI-assisted development. Without enforcement, even an agent with memory available repeats this loop: grep → read → reason → retry — because prompt-level instructions are optional, not physical constraints. FocusMemory closes that gap with a `PreToolUse` hard gate, making token savings guaranteed rather than best-effort.
 
 <br>
 
@@ -58,6 +58,19 @@ An AI agent without pre-indexed memory repeats this loop: grep → read → reas
 **Net effect**: average tool calls per query 3.5 → 1.8 (~49%), response time 25s → 8s (~68%).
 
 > *Benchmark methodology: measured on a mid-size PHP/JS codebase (~200k LOC, ~1,500 files) with 50 representative queries (causal reasoning, code graph lookup, project fact retrieval). Tool calls and latency averaged across 3 runs. Individual results vary by project size and query complexity.*
+
+### Why enforcement matters, not just availability
+
+Making `search_memory` available isn't enough — a model will still reach for `grep_search`/`glob` out of habit unless it's physically prevented from doing so. Prompt-level instructions (AGENTS.md) are cooperative, not enforced: a model under context pressure or with weak instruction-following will skip straight to grep regardless of what the system prompt says.
+
+The `PreToolUse` hook closes this gap. `grep_search`/`glob` calls are denied at the tool-execution layer — before the shell ever runs — until `search_memory` has been called in the current turn. This turns the token savings above from a best-effort suggestion into a guaranteed floor: the agent physically cannot fall back into a grep → read → reason → retry loop while the Hard Gate is active.
+
+| State | Tool calls/query | Why |
+|---|---|---|
+| MCP tools available (no gate) | ~3.5 | Model ignores prompt instructions, falls back to grep-first habit |
+| PreToolUse hard gate active | 1.8 | `grep_search`/`glob` physically blocked until `search_memory` runs first |
+
+The benchmark numbers above reflect the **hard gate active** state. Without enforcement, savings are model-dependent and unreliable.
 
 ### Remaining improvements
 
