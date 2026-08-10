@@ -275,21 +275,35 @@ QDRANT_URL=http://localhost:6333 npm run build-graph /path/to/your/project
 ```
 
 **2. Install the extension:**
+
+`${extensionPath}` resolves to the directory containing `qwen-extension.json`. Install by symlinking the FocusMemory root into your extensions folder:
+
 ```bash
 mkdir -p ~/.qwen/extensions/focus-memory
 
-# Symlink (recommended — changes reflect automatically)
-ln -sf /path/to/FocusMemory/qwen-code-extension/qwen-extension.json \
+# Symlink key files — ${extensionPath} will resolve to ~/.qwen/extensions/focus-memory/
+ln -sf /path/to/FocusMemory/qwen-extension.json \
        ~/.qwen/extensions/focus-memory/qwen-extension.json
-ln -sf /path/to/FocusMemory/qwen-code-extension/AGENTS.md \
+ln -sf /path/to/FocusMemory/AGENTS.md \
        ~/.qwen/extensions/focus-memory/AGENTS.md
+ln -sf /path/to/FocusMemory/index.js \
+       ~/.qwen/extensions/focus-memory/index.js
+ln -sf /path/to/FocusMemory/qwen-code-extension \
+       ~/.qwen/extensions/focus-memory/qwen-code-extension
 ```
 
-Edit `~/.qwen/extensions/focus-memory/qwen-extension.json` and update the MCP server path to match your FocusMemory installation:
+This ensures all `${extensionPath}` references resolve correctly:
+- `${extensionPath}${/}index.js` → MCP server entry point
+- `${extensionPath}${/}qwen-code-extension${/}hooks${/}` → Hard Gate hook scripts
 
-```json
-{ "mcpServers": { "focus-memory": { "args": ["/path/to/FocusMemory/index.js"] } } }
-```
+> **Note:** If you prefer a non-symlink install, copy the files instead:
+> ```bash
+> cp /path/to/FocusMemory/qwen-extension.json ~/.qwen/extensions/focus-memory/
+> cp /path/to/FocusMemory/AGENTS.md ~/.qwen/extensions/focus-memory/
+> cp /path/to/FocusMemory/index.js ~/.qwen/extensions/focus-memory/
+> cp -r /path/to/FocusMemory/qwen-code-extension ~/.qwen/extensions/focus-memory/
+> ```
+> (You'll need to re-copy when updating FocusMemory.)
 
 **3. Start FocusMemory server:**
 ```bash
@@ -311,7 +325,7 @@ CLI mode loads extensions automatically — this step is not required.
 
 ### Hard Gate hook scripts
 
-The PreToolUse hooks require three Node.js scripts in `.qwen/hooks/`:
+The PreToolUse hooks require three Node.js scripts in `qwen-code-extension/hooks/`:
 
 | Script | Trigger | Action |
 |--------|---------|--------|
@@ -319,7 +333,7 @@ The PreToolUse hooks require three Node.js scripts in `.qwen/hooks/`:
 | `log-tool-call.js` | PreToolUse `search_memory` | Set `memoryCalled = true`, allow |
 | `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow |
 
-Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `.qwen/tmp/tool-calls/`. Output format: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`.
+Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`. Output format: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`.
 
 ### Design principles
 
@@ -407,7 +421,13 @@ FocusMemory/
 ├── logs/                   # Auto-generated state & log files (gitignored)
 ├── qwen-code-extension/    # Qwen Code extension (manifest + AGENTS.md)
 │   ├── qwen-extension.json # Extension manifest (mcpServers + hooks)
-│   └── AGENTS.md           # Hard Gate search protocol rules
+│   ├── AGENTS.md           # Hard Gate search protocol rules
+│   └── hooks/              # PreToolUse hook scripts
+│       ├── check-memory-first.js
+│       ├── log-tool-call.js
+│       └── reset-memory-flag.js
+├── qwen-extension.json     # Extension manifest (root copy for discovery)
+├── AGENTS.md               # Hard Gate rules (root copy for discovery)
 ├── package.json
 └── README.md
 ```
