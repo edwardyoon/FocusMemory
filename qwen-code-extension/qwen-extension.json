@@ -40,6 +40,41 @@
             }
           }
         ]
+      },
+      {
+        "description": "Hard Gate — reset memoryCalled flag at start of each new turn so grep_search/glob is blocked until search_memory runs first",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/homebrew/var/www/.qwen/hooks/reset-memory-flag.js",
+            "name": "reset-memory-flag",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__focus-memory__search_memory$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/homebrew/var/www/.qwen/hooks/log-tool-call.js",
+            "name": "log-search-memory",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
+        "matcher": "^(grep_search|glob)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /opt/homebrew/var/www/.qwen/hooks/check-memory-first.js",
+            "name": "check-memory-first",
+            "timeout": 5000
+          }
+        ]
       }
     ]
   }

@@ -186,15 +186,147 @@ JSON stats are also available at `http://localhost:8891/api/stats` and `http://l
 
 ## Qwen Code Extension
 
-FocusMemory ships a ready-to-install extension for **[qwen-code](https://github.com/QwenLM/qwen-code)** — zero upstream modifications required:
+FocusMemory ships a ready-to-install extension for **[qwen-code](https://github.com/QwenLM/qwen-code)** — zero upstream modifications required. The extension wires all MCP tools and hooks through a single `qwen-extension.json` manifest:
 
 ```
-User prompt → [HTTP Hook: auto-recall] → context injected → [Agent Loop + MCP tools] → [Write-back to Qdrant]
+User prompt → [HTTP Hook: auto-recall] + [Hard Gate: reset flag]
+  → context injected, grep/glob blocked
+  → Agent calls search_memory → Hard Gate opens (grep/glob allowed)
+  → Code work → Write-back to Qdrant
 ```
 
-The extension installs via a single `qwen-extension.json` manifest that wires all MCP tools and an auto-recall HTTP hook. An `AGENTS.md` enforces the Hard Gate search protocol inside the agent loop.
+### Architecture
 
-See [`qwen-code-extension/`](qwen-code-extension/) for installation instructions.
+```
+qwen-code (upstream — zero modifications)
+    │
+    ├── Extension: qwen-extension.json
+    │   ├── mcpServers.focus-memory  → MCP stdio (8 tools)
+    │   └── hooks:
+    │       ├── UserPromptSubmit (HTTP)  → auto-recall context from Qdrant
+    │       ├── UserPromptSubmit (cmd)   → reset Hard Gate flag each turn
+    │       ├── PreToolUse search_memory → set memoryCalled flag
+    │       └── PreToolUse grep_search/glob → deny if flag not set
+    │
+    └── AGENTS.md                    → Hard Gate search protocol
+
+FocusMemory/                         ← Single process: MCP stdio + Hono HTTP
+    ├── index.js                     ← /v1/context/search endpoint
+    └── utils.js                     ← extractQueryFeatures, routeQuery, pruneAndSummarize
+```
+
+### Execution flow
+
+```
+User prompt submitted
+  │
+  ▼
+[Auto-recall] UserPromptSubmit HTTP Hook fires
+  → POST http://localhost:3900/v1/context/search
+  → FocusMemory searches Qdrant (work_memory + project_facts)
+  → SUMMARY_LLM prunes & summarizes results (~400 tokens)
+  → additionalContext injected into agent context
+  │
+  ▼
+[Hard Gate] UserPromptSubmit command Hook fires
+  → reset-memory-flag.js sets memoryCalled = false
+  │
+  ▼
+[Agent Loop] AGENTS.md Hard Gate rules active + PreToolUse enforcement
+  → grep_search/glob blocked until search_memory called (PreToolUse deny)
+  → "Hook already injected context? Skip redundant search"
+  → Or "New sub-question → call search_memory via MCP tool"
+  │
+  ▼
+[search_memory called] PreToolUse hook fires
+  → log-tool-call.js sets memoryCalled = true (Hard Gate opens)
+  │
+  ▼
+[Code Work] grep / read / edit / test — normal qwen-code tools
+  │
+  ▼
+[Write-back] remember_decision records outcome to Qdrant
+```
+
+### Hard Gate enforcement levels
+
+| Phase | Mechanism | Enforcement |
+|-------|-----------|-------------|
+| **Initial prompt** | `UserPromptSubmit` HTTP hook fires before agent loop starts | ✅ System-level — model cooperation not required |
+| **Mid-turn (PreToolUse)** | `grep_search`/`glob` blocked until `search_memory` called | ✅ Physical block — returns `permissionDecision: deny` |
+| **Mid-workflow** | AGENTS.md instructs "search_memory first" | ⚠️ Prompt-level suggestion — model may ignore |
+
+The PreToolUse hook enforces the Hard Gate at the system level. When an agent attempts to call `grep_search` or `glob` without calling `search_memory` first, the hook returns a deny decision with the reason message: `[Hard Gate] Call mcp__focus-memory__search_memory before using grep_search/glob.`
+
+### Installation
+
+**1. Set up FocusMemory backend:**
+```bash
+cd /path/to/FocusMemory
+npm install
+node init.js /path/to/your/project
+
+# Create Qdrant collections and ingest docs
+QDRANT_URL=http://localhost:6333 npm run create-collections
+QDRANT_URL=http://localhost:6333 npm run auto-ingest --force
+
+# Build code graph (JS + PHP)
+QDRANT_URL=http://localhost:6333 npm run build-graph /path/to/your/project
+```
+
+**2. Install the extension:**
+```bash
+mkdir -p ~/.qwen/extensions/focus-memory
+
+# Symlink (recommended — changes reflect automatically)
+ln -sf /path/to/FocusMemory/qwen-code-extension/qwen-extension.json \
+       ~/.qwen/extensions/focus-memory/qwen-extension.json
+ln -sf /path/to/FocusMemory/qwen-code-extension/AGENTS.md \
+       ~/.qwen/extensions/focus-memory/AGENTS.md
+```
+
+Edit `~/.qwen/extensions/focus-memory/qwen-extension.json` and update the MCP server path to match your FocusMemory installation:
+
+```json
+{ "mcpServers": { "focus-memory": { "args": ["/path/to/FocusMemory/index.js"] } } }
+```
+
+**3. Start FocusMemory server:**
+```bash
+cd /path/to/FocusMemory
+QDRANT_URL=http://localhost:6333 \
+  BGE_URL=http://localhost:8080/v1/embeddings \
+  SUMMARY_LLM_URL=http://localhost:8081/v1/completions \
+  HTTP_PORT=3900 \
+  CONTEXT_API_TOKEN=focus-memory-local \
+  node index.js &
+```
+
+**4. Enable extension (VS Code IDE only):**
+```bash
+echo '{"focus-memory": true}' > ~/.qwen/extensions/extension-enablement.json
+```
+
+CLI mode loads extensions automatically — this step is not required.
+
+### Hard Gate hook scripts
+
+The PreToolUse hooks require three Node.js scripts in `.qwen/hooks/`:
+
+| Script | Trigger | Action |
+|--------|---------|--------|
+| `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Set `memoryCalled = false` |
+| `log-tool-call.js` | PreToolUse `search_memory` | Set `memoryCalled = true`, allow |
+| `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow |
+
+Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `.qwen/tmp/tool-calls/`. Output format: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`.
+
+### Design principles
+
+1. **Zero upstream modifications** — Uses only qwen-code's native Extension and Hook system. Upgrades to qwen-code are safe; only the manifest may need adjustment if extension specs change.
+2. **Hard Gate is enforced, not suggested** — The HTTP hook guarantees context injection at session start. PreToolUse hooks physically block grep/glob until search_memory runs. Mid-workflow rules in AGENTS.md provide guidance with conditional re-search to minimize token waste.
+3. **Stay out of the inference path** — FocusMemory provides context before prompt assembly. Inference happens directly between client and model. No added latency during tool execution.
+4. **Write-back is part of the loop** — Read-only memory is half-baked. `remember_decision` records outcomes to Qdrant so future sessions build on past work instead of repeating it.
 
 <br>
 
@@ -275,8 +407,7 @@ FocusMemory/
 ├── logs/                   # Auto-generated state & log files (gitignored)
 ├── qwen-code-extension/    # Qwen Code extension (manifest + AGENTS.md)
 │   ├── qwen-extension.json # Extension manifest (mcpServers + hooks)
-│   ├── AGENTS.md           # Hard Gate search protocol rules
-│   └── README.md           # Installation & usage guide
+│   └── AGENTS.md           # Hard Gate search protocol rules
 ├── package.json
 └── README.md
 ```
