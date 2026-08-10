@@ -57,7 +57,7 @@ An AI agent without pre-indexed memory repeats this loop: grep → read → reas
 
 **Net effect**: average tool calls per query 3.5 → 1.8 (~49%), response time 25s → 8s (~68%).
 
-> *Benchmark methodology: measured on a mid-size PHP/JS codebase (~200k LOC, ~1,500 files) with 50 representative queries (causal reasoning, code graph lookup, project fact retrieval). Tool calls and latency averaged across 3 runs. Individual results vary by project size and query complexity.*
+> *Benchmark methodology: measured on a mid-size mixed-language codebase (~200k LOC, ~1,500 files) with 50 representative queries (causal reasoning, code graph lookup, project fact retrieval). Tool calls and latency averaged across 3 runs. Individual results vary by project size and query complexity.*
 
 ### Why enforcement matters, not just availability
 
@@ -95,7 +95,7 @@ The write-back gate is conservative by design — both a code change AND a compl
 | **Causal decision chains** | Decisions stored as linked nodes with `supersedes`/`superseded_by` — trace the full "why" history of any architectural choice, from original rationale through every replacement |
 | **Work history** | Decisions, bug fixes, resolved issues — written back after each session so the next agent starts where the last left off |
 | **Project knowledge** | Docs and plans chunked, embedded, and searchable via vector similarity |
-| **Semantic code search** | Natural-language queries against JS/TS/PHP function bodies using BGE-M3 embeddings |
+| **Semantic code search** | Natural-language queries against JS/TS/Python/PHP function bodies using BGE-M3 embeddings |
 | **Code graph** | tree-sitter AST parsing → function nodes + call edges for "who calls X?" questions |
 | **Smart routing** | Scoring-based query router dispatches to the right backend (vector vs keyword vs decision chain) automatically |
 
@@ -151,7 +151,7 @@ Run `auto-ingest` periodically (e.g., every 5 minutes via crontab or launchd):
 */5 * * * * cd /path/to/FocusMemory && npm run auto-ingest >> /var/log/focusmemory.log 2>&1
 ```
 
-`auto-ingest` is incremental by default: it compares file modification times against a state file (`ingest_state.json`) and only re-processes new or changed files. It also runs the **semantic code chunk indexer** automatically, so your `.js`, `.ts`, and `.php` functions stay up to date without manual intervention.
+`auto-ingest` is incremental by default: it compares file modification times against a state file (`ingest_state.json`) and only re-processes new or changed files. It also runs the **semantic code chunk indexer** automatically, so your `.js`, `.ts`, `.py`, and `.php` functions stay up to date without manual intervention.
 
 For a full rebuild (after schema changes or collection corruption):
 
@@ -301,7 +301,7 @@ node init.js /path/to/your/project
 QDRANT_URL=http://localhost:6333 npm run create-collections
 QDRANT_URL=http://localhost:6333 npm run auto-ingest --force
 
-# Build code graph (JS + PHP)
+# Build code graph (JS + Python + PHP)
 QDRANT_URL=http://localhost:6333 npm run build-graph /path/to/your/project
 ```
 
@@ -389,7 +389,7 @@ Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and u
 | `trace_decision_chain` | **Causal Decision Chain** — trace the full history of a decision: what superseded it, why, and what came after (query or decision_id) |
 | `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
 | `search_project_facts` | DB schemas, infra topology, API specs (direct) |
-| `search_code` | Natural language search over JS/TS/PHP function bodies (vector similarity on code_chunks) |
+| `search_code` | Natural language search over JS/TS/Python/PHP function bodies (vector similarity on code_chunks) |
 | `query_graph` | Code graph: "who calls X?", "functions in file Y", dependencies |
 | `remember_decision` | Write a new decision into work_memory + decision_chains (with reasoning, topic_key, supersedes links) |
 | `search_web` | Web search via local search server |
@@ -424,7 +424,7 @@ Raw vector search returns top-N results, but 80% may be irrelevant noise. Before
 
 ### Semantic code search
 
-JS/TS/PHP files are parsed (tree-sitter for JS, regex fallback for TS/PHP) to extract function and method bodies as chunks. Each chunk is embedded using BGE-M3 and stored in the `code_chunks` Qdrant collection. Incremental indexing compares SHA-256 content hashes — only changed files trigger re-extraction and re-embedding. The `search_code` tool takes a natural language query, embeds it, and returns the top matching code snippets with file path, line numbers, and similarity score.
+JS/TS/Python/PHP files are parsed (tree-sitter for JS, regex fallback for TS/Python/PHP) to extract function and method bodies as chunks. Each chunk is embedded using BGE-M3 and stored in the `code_chunks` Qdrant collection. Incremental indexing compares SHA-256 content hashes — only changed files trigger re-extraction and re-embedding. The `search_code` tool takes a natural language query, embeds it, and returns the top matching code snippets with file path, line numbers, and similarity score.
 
 <br>
 
@@ -445,7 +445,7 @@ FocusMemory/
 │       └── indexCodeChunks.js
 ├── scripts/                # CLI utility scripts
 │   ├── createCollection.js # Initialize Qdrant collections & payload indexes
-│   ├── buildGraph.js       # tree-sitter JS + regex TS/PHP → function nodes + call edges
+│   ├── buildGraph.js       # tree-sitter JS + regex TS/Python/PHP → function nodes + call edges
 │   ├── indexCodeStructure.js  # MeiliSearch code structure indexer
 │   └── testSearch.js       # Search test CLI
 ├── web/                    # Dashboard UI (port 8891)
