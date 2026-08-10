@@ -1710,17 +1710,25 @@ async function collectDashboardStats() {
     stats.qdrant.error = err.message;
   }
 
-  // Meilisearch indexes
+  // Meilisearch indexes — getIndexes() in v1.x returns minimal info; use stats endpoint per index for counts
   try {
     if (MEILI_MASTER_KEY) {
       const meiliClientForDash = new Meilisearch({ host: MEILI_HOST, apiKey: MEILI_MASTER_KEY });
       const indexList = await meiliClientForDash.getIndexes().catch(() => ({ results: [] }));
       stats.meilisearch.indexes = {};
       for (const idx of (indexList.results || [])) {
+        let docCount = 0;
+        let fieldDist = {};
+        try {
+          const indexObj = await meiliClientForDash.getIndex(idx.uid);
+          const s = await indexObj.getStats();
+          docCount = s.numberOfDocuments || 0;
+          fieldDist = s.fieldDistribution || {};
+        } catch {}
         stats.meilisearch.indexes[idx.uid] = {
-          documentCount: idx.numberOfDocuments || 0,
-          fieldCount: idx.fieldDistribution ? Object.keys(idx.fieldDistribution).length : 0,
-          indexedDocumentCount: idx.numberOfDocuments || 0,
+          documentCount: docCount,
+          fieldCount: Object.keys(fieldDist).length,
+          indexedDocumentCount: docCount,
           isIndexing: false,
         };
       }
