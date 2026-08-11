@@ -7,3 +7,5 @@ update.sh
 code_structure_state.json
 ingest_state.json
 logs/
+.qwen/
+gate-telemetry.jsonl

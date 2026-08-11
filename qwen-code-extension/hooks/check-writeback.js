@@ -6,7 +6,16 @@ const fs = require('fs');
 const path = require('path');
 
 const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
+const TELEMETRY_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'focus-memory');
 fs.mkdirSync(STATE_DIR, { recursive: true });
+fs.mkdirSync(TELEMETRY_DIR, { recursive: true });
+
+function appendTelemetry(entry) {
+  const file = path.join(TELEMETRY_DIR, 'gate-telemetry.jsonl');
+  try {
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch {}
+}
 
 // Completion signal patterns — conservative to minimize false positives
 const COMPLETION_PATTERNS = [
@@ -40,21 +49,27 @@ function main() {
 
   // Already recorded or user explicitly declined — skip
   if (state.decisionRecorded || state.decisionDeclined) {
+    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-writeback', decision: 'skip', reason: state.decisionRecorded ? 'already_recorded' : 'declined' });
     returnAllow();
   }
 
   // Check for code changes in tool log
-  const hasCodeChange = readToolLog(logFile).some(t => ['edit', 'write_file'].includes(t.tool));
+  const toolLog = readToolLog(logFile);
+  const codeChanges = toolLog.filter(t => ['edit', 'write_file'].includes(t.tool));
+  const hasCodeChange = codeChanges.length > 0;
 
   // Check for completion signal in last assistant message
   const msg = event.last_assistant_message || '';
-  const looksComplete = COMPLETION_PATTERNS.some(p => p.test(msg));
+  const matchedPattern = COMPLETION_PATTERNS.find(p => p.test(msg));
+  const looksComplete = !!matchedPattern;
 
   // Conservative: both code change AND completion signal required
   if (hasCodeChange && looksComplete) {
+    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-writeback', decision: 'ask', heuristic_matched: 'completion_pattern+code_change', code_change_count: codeChanges.length, pattern: matchedPattern ? matchedPattern.toString() : null, user_response: null });
     returnAsk();
   }
 
+  appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-writeback', decision: 'allow', hasCodeChange, looksComplete, code_change_count: codeChanges.length });
   returnAllow();
 }
 

@@ -6,7 +6,16 @@ const fs = require('fs');
 const path = require('path');
 
 const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
+const TELEMETRY_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'focus-memory');
 fs.mkdirSync(STATE_DIR, { recursive: true });
+fs.mkdirSync(TELEMETRY_DIR, { recursive: true });
+
+function appendTelemetry(entry) {
+  const file = path.join(TELEMETRY_DIR, 'gate-telemetry.jsonl');
+  try {
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch {}
+}
 
 function main() {
   const raw = fs.readFileSync(0, 'utf8');
@@ -42,6 +51,7 @@ function main() {
     state.decisionRecorded = true;
     // Clear decline flag since user chose to record
     delete state.decisionDeclined;
+    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-writeback', event: 'user_response', decision: 'yes', tool: toolName });
   }
 
   // Code change tools — track and reset decline flag on new work

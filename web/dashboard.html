@@ -320,6 +320,51 @@
     </div>
   </div>
 
+  <!-- Gate Telemetry -->
+  <div class="section-title">Gate Telemetry</div>
+  <div class="grid" id="gateGrid">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">Read Hard Gate</span>
+        <span class="card-tag vector">Memory</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Allow</div>
+          <div class="stat-value accent" id="gateMemoryAllow">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Deny</div>
+          <div class="stat-value" id="gateMemoryDeny">-</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">Write-back Gate</span>
+        <span class="card-tag fulltext">Decision</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Ask</div>
+          <div class="stat-value accent" id="gateWriteAsk">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Allow</div>
+          <div class="stat-value" id="gateWriteAllow">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Skip</div>
+          <div class="stat-value" id="gateWriteSkip">-</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">User Yes</div>
+          <div class="stat-value accent" id="gateUserYes">-</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Qdrant Collections -->
   <div class="section-title">Qdrant Collections</div>
   <div class="grid" id="qdrantGrid">
@@ -360,6 +405,15 @@ async function fetchStats() {
     renderQdrant(data.qdrant || {});
     renderMeili(data.meilisearch || {});
     renderSystemInfo(data.system || {});
+
+    // Gate telemetry
+    try {
+      const gateRes = await fetch(API_BASE + '/api/gate-stats');
+      if (gateRes.ok) {
+        const gateData = await gateRes.json();
+        renderGate(gateData);
+      }
+    } catch {}
   } catch (err) {
     errors.push(err.message);
     showError(errors.join('; '));
@@ -477,6 +531,15 @@ function renderSystemInfo(sys) {
       <span class="info-val">${esc(String(val))}</span>
     </div>
   `).join('');
+}
+
+function renderGate(data) {
+  document.getElementById('gateMemoryAllow').textContent = formatNum(data.memoryGate?.allow || 0);
+  document.getElementById('gateMemoryDeny').textContent = formatNum(data.memoryGate?.deny || 0);
+  document.getElementById('gateWriteAsk').textContent = formatNum(data.writeBackGate?.ask || 0);
+  document.getElementById('gateWriteAllow').textContent = formatNum(data.writeBackGate?.allow || 0);
+  document.getElementById('gateWriteSkip').textContent = formatNum(data.writeBackGate?.skip || 0);
+  document.getElementById('gateUserYes').textContent = formatNum(data.userResponses?.yes || 0);
 }
 
 function formatNum(n) {

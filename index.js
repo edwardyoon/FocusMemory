@@ -1770,6 +1770,40 @@ httpApp.get("/api/stats", async (c) => {
   return c.json(stats);
 });
 
+httpApp.get("/api/gate-stats", async (c) => {
+  try {
+    const fsSync = await import("fs");
+    const pathMod = await import("path");
+    const home = process.env.HOME || process.env.USERPROFILE || ".";
+    const telemetryPath = pathMod.default.join(home, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
+    if (!fsSync.default.existsSync(telemetryPath)) {
+      return c.json({ total: 0, memoryGate: { allow: 0, deny: 0 }, writeBackGate: { ask: 0, allow: 0, skip: 0 }, userResponses: { yes: 0, no: 0 } });
+    }
+    const lines = fsSync.default.readFileSync(telemetryPath, "utf-8").trim().split("\n").filter(Boolean);
+    const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const memoryGate = { allow: 0, deny: 0 };
+    const writeBackGate = { ask: 0, allow: 0, skip: 0 };
+    let yes = 0, no = 0;
+    for (const e of entries) {
+      if (e.hook === "check-memory-first") {
+        if (e.decision === "allow") memoryGate.allow++;
+        else if (e.decision === "deny") memoryGate.deny++;
+      } else if (e.hook === "check-writeback") {
+        if (e.decision === "ask") writeBackGate.ask++;
+        else if (e.decision === "allow") writeBackGate.allow++;
+        else if (e.decision === "skip") writeBackGate.skip++;
+      }
+      if (e.event === "user_response") {
+        if (e.decision === "yes") yes++;
+        else if (e.decision === "no") no++;
+      }
+    }
+    return c.json({ total: entries.length, memoryGate, writeBackGate, userResponses: { yes, no } });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ─── Dashboard UI: serve on port 8891 ───
 
 const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "8891", 10);
@@ -1782,6 +1816,35 @@ try {
   dashApp.get("/api/stats", async (cD) => {
     const stats = await collectDashboardStats();
     return cD.json(stats);
+  });
+  dashApp.get("/api/gate-stats", async (cD) => {
+    const fsSync2 = await import("fs");
+    const pathMod2 = await import("path");
+    const home2 = process.env.HOME || process.env.USERPROFILE || ".";
+    const telemetryPath2 = pathMod2.default.join(home2, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
+    if (!fsSync2.default.existsSync(telemetryPath2)) {
+      return cD.json({ total: 0, memoryGate: { allow: 0, deny: 0 }, writeBackGate: { ask: 0, allow: 0, skip: 0 }, userResponses: { yes: 0, no: 0 } });
+    }
+    const lines2 = fsSync2.default.readFileSync(telemetryPath2, "utf-8").trim().split("\n").filter(Boolean);
+    const entries2 = lines2.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+    const memoryGate2 = { allow: 0, deny: 0 };
+    const writeBackGate2 = { ask: 0, allow: 0, skip: 0 };
+    let yes2 = 0, no2 = 0;
+    for (const e of entries2) {
+      if (e.hook === "check-memory-first") {
+        if (e.decision === "allow") memoryGate2.allow++;
+        else if (e.decision === "deny") memoryGate2.deny++;
+      } else if (e.hook === "check-writeback") {
+        if (e.decision === "ask") writeBackGate2.ask++;
+        else if (e.decision === "allow") writeBackGate2.allow++;
+        else if (e.decision === "skip") writeBackGate2.skip++;
+      }
+      if (e.event === "user_response") {
+        if (e.decision === "yes") yes2++;
+        else if (e.decision === "no") no2++;
+      }
+    }
+    return cD.json({ total: entries2.length, memoryGate: memoryGate2, writeBackGate: writeBackGate2, userResponses: { yes: yes2, no: no2 } });
   });
 
   const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort });

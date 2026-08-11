@@ -5,7 +5,16 @@ const path = require('path');
 
 // State lives in ~/.qwen/tmp/tool-calls/ so it's per-user, not tied to where FocusMemory is cloned
 const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
+const TELEMETRY_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'focus-memory');
 fs.mkdirSync(STATE_DIR, { recursive: true });
+fs.mkdirSync(TELEMETRY_DIR, { recursive: true });
+
+function appendTelemetry(entry) {
+  const file = path.join(TELEMETRY_DIR, 'gate-telemetry.jsonl');
+  try {
+    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
+  } catch {}
+}
 
 function main() {
   const raw = fs.readFileSync(0, 'utf8');
@@ -18,17 +27,23 @@ function main() {
   if (!sessionId) returnAllow();
 
   const stateFile = path.join(STATE_DIR, `${sessionId}.json`);
+  const toolName = event.tool_name || '';
 
+  let decision = 'deny';
   try {
     let state;
     if (fs.existsSync(stateFile)) {
       state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     } else {
+      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false, reason: 'no_state' });
       returnDeny();
     }
     if (state && state.memoryCalled) {
+      decision = 'allow';
+      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: true });
       returnAllow();
     }
+    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false });
     returnDeny();
   } catch {
     returnAllow();
