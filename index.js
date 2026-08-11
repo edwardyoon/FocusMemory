@@ -242,6 +242,17 @@ server.registerTool(
   async ({ query, limit }) => {
     log(`[MCP search_memory] source=mcp, query="${query.slice(0, 80)}", limit=${limit}`);
 
+    // Explicit file path detection — skip memory search for direct file I/O queries
+    const explicitFile = /\/[A-Za-z0-9_\-\.\/]+\.[a-zA-Z0-9]{2,5}(?:\s|$)/.test(query);
+    if (explicitFile) {
+      return {
+        content: [{
+          type: "text",
+          text: `Skip memory search: query contains explicit file path. Use search_code / query_graph / grep_search for direct code/file lookup instead of memory search.`
+        }]
+      };
+    }
+
     // Step 1: extract features and score backends (§1.2)
     const features = extractQueryFeatures(query);
     const route = routeQuery(query, features);
