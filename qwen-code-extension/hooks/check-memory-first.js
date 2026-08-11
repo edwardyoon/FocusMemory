@@ -29,6 +29,17 @@ function main() {
   const stateFile = path.join(STATE_DIR, `${sessionId}.json`);
   const toolName = event.tool_name || '';
 
+  // 1. Bypass Hard Gate when an explicit file path is present in the tool input
+  try {
+    const inputStr = JSON.stringify(event.tool_input || '');
+    // Absolute path pattern: /.../filename.ext
+    const explicitFile = /\/[A-Za-z0-9_\-\.\/]+\.[a-zA-Z0-9]{2,5}(?:\s|$)/.test(inputStr);
+    if ((toolName === 'grep_search' || toolName === 'glob') && explicitFile) {
+      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision: 'allow', memoryCalled: false, reason: 'explicit_file_path_bypass' });
+      returnAllow();
+    }
+  } catch {}
+
   let decision = 'deny';
   try {
     let state;
