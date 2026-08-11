@@ -56,8 +56,9 @@ function main() {
 
   // Code change tools — track and reset decline flag on new work
   if (['edit', 'write_file'].includes(toolName)) {
-    // New code edit means a new work unit started — clear old decline so we can ask again later
+    // New code edit means a new work unit started — clear old decline/record so we can ask again later
     delete state.decisionDeclined;
+    delete state.decisionRecorded;
   }
 
   // Write updated state
