@@ -21,6 +21,9 @@
 
 5. Code modification or answer.
 
+## Note on Hook Enforcement
+The `check-memory-first` hook now intercepts grep_search/glob calls and can auto-inject relevant memory/code search results before the tool executes. When you see a `## Search Results (Auto-injected)` header, treat step 1 (search_memory) as already satisfied — do not re-call it manually. This Hard Gate exists to narrow the search space before falling back to raw grep/glob, not to force a fixed number of tool calls; if the hook has already surfaced the relevant files, proceed directly to reading/editing them.
+
 ## When to Skip Steps (Exceptions)
 - User explicitly names a file path ("Read /path/to/file.php") → go directly to `read_file`.
 - User asks for exact symbol match with known name (`grep_search` only).
