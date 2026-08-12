@@ -168,8 +168,20 @@ function rerankMerged(allResults) {
   const now = Date.now();
   const DAY_MS = 86400000;
 
+  // Backend-specific weight coefficients — project_facts prioritized over work_memory
+  const backendWeights = {
+    project_facts: 1.3,
+    decision_chains: 1.1,
+    work_memory: 1.0,
+    graph: 1.0,
+    code_structure: 0.9,
+  };
+
   return allResults
     .map((r) => {
+      const collection = r._collection || "work_memory";
+      const weight = backendWeights[collection] ?? 1.0;
+
       let recencyScore = 0.5; // neutral default for project_facts (no timestamp)
       if (r.payload.timestamp) {
         const ageDays = (now - new Date(r.payload.timestamp).getTime()) / DAY_MS;
@@ -187,7 +199,8 @@ function rerankMerged(allResults) {
 
       // α=0.7: cosine score dominates, recency is a tiebreaker
       const alpha = 0.7;
-      return { ...r, rerank_score: alpha * r.score + (1 - alpha) * recencyScore };
+      const weightedScore = (r.score ?? 0) * weight;
+      return { ...r, rerank_score: alpha * weightedScore + (1 - alpha) * recencyScore };
     })
     .sort((a, b) => b.rerank_score - a.rerank_score);
 }
@@ -258,11 +271,12 @@ server.registerTool(
     const route = routeQuery(query, features);
 
     // Separate targets by search mode
-    const vectorTargets = route.targets.filter((t) => t !== "graph" && t !== "decision_chains");
+    const vectorTargets = route.targets.filter((t) => t !== "graph" && t !== "decision_chains" && t !== "project_facts");
     const graphTarget = route.targets.includes("graph") ? "graph" : null;
     const chainTarget = route.primary === "decision_chains" || route.targets.includes("decision_chains")
       ? "decision_chains"
       : null;
+    const factsTarget = route.targets.includes("project_facts") ? "project_facts" : null;
 
     let allResults = [];
     let chainOutput = null;
@@ -304,8 +318,14 @@ server.registerTool(
         return results.map((r) => ({ ...r, _collection: col }));
       });
 
-      // Also search Meilisearch for docs/plans text matches (skip if already done as primary for knowledge queries)
-      if (!isKnowledgeQuery || meiliDocsResults.length === 0) {
+      // project_facts target → Meilisearch search with explicit collection tag
+      if (factsTarget) {
+        const factsSearch = searchMeili(query, { limit: perCollectionLimit }).then(res => 
+          res.map(r => ({ ...r, _collection: "project_facts" }))
+        ).catch(() => []);
+        searches.push(factsSearch);
+      } else if (!isKnowledgeQuery || meiliDocsResults.length === 0) {
+        // Fallback generic Meilisearch search for docs/plans
         const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
         searches.push(meiliSearch);
       }
@@ -354,6 +374,7 @@ server.registerTool(
       ...vectorTargets.map(t => t),
       graphTarget || null,
       chainTarget || null,
+      factsTarget || null,
       "meili", // meili always runs with vector targets
       "code_structure", // P1 always runs with vector targets
     ].filter(Boolean));
