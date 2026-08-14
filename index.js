@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { fileURLToPath } from "url";
 const __dirname = new URL(".", import.meta.url).pathname;
-dotenv.config({ override: true, path: __dirname + ".env" }); // .env takes priority — absolute path so MCP stdio CWD doesn't matter
+dotenv.config({ override: true, quiet: true, path: __dirname + ".env" }); // .env 우선(절대경로). quiet:true 필수 — dotenv v17이 stdout에 배너를 출력하면 MCP stdio JSON-RPC 프레임이 깨진다
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { QdrantClient } from "@qdrant/js-client-rest";
