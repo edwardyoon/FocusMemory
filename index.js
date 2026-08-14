@@ -1841,7 +1841,7 @@ httpApp.get("/api/gate-stats", async (c) => {
 const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "8891", 10);
 try {
   const fsSync = await import("fs");
-  const dashboardHtml = fsSync.default.readFileSync(__dirname + "web/dashboard.html", "utf-8");
+  const dashboardHtml = fsSync.default.readFileSync(__dirname + "/web/dashboard.html", "utf-8");
 
   const dashApp = new Hono();
   dashApp.get("/", (c) => c.html(dashboardHtml));
