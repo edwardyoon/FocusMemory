@@ -346,7 +346,7 @@ CLI mode loads extensions automatically — this step is not required.
 
 ### Hard Gate hook scripts
 
-The PreToolUse and Stop hooks use four Node.js scripts in `qwen-code-extension/hooks/`:
+The PreToolUse and Stop hooks use four Node.js scripts in `hooks/`:
 
 | Script | Trigger | Action |
 |--------|---------|--------|
@@ -454,22 +454,19 @@ FocusMemory/
 ├── config/                 # Configuration files
 │   └── com.focusmemory.autoingest.plist  # launchd cron job
 ├── logs/                   # Auto-generated state & log files (gitignored)
-├── qwen-code-extension/    # Qwen Code extension source (manifest + AGENTS.md)
-│   ├── qwen-extension.json # Extension manifest source (mcpServers + hooks)
-│   ├── AGENTS.md           # Hard Gate search protocol rules
-│   └── hooks/              # PreToolUse + Stop hook scripts
-│       ├── check-memory-first.js  # PreToolUse: deny grep/glob if memory not called
-│       ├── check-writeback.js     # Stop: detect completion, ask to record decision
-│       ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
-│       └── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
-├── qwen-extension.json     # Root copy — symlink install requires this at directory top level
-├── AGENTS.md               # Root copy — same reason, keeps extension self-contained
+├── qwen-extension.json     # Qwen Code extension manifest (mcpServers + hooks)
+├── AGENTS.md               # Hard Gate search protocol rules (agent context)
+├── hooks/                  # PreToolUse + Stop hook scripts
+│   ├── check-memory-first.js  # PreToolUse: deny grep/glob if memory not called
+│   ├── check-writeback.js     # Stop: detect completion, ask to record decision
+│   ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
+│   └── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
 ├── LICENSE                 # MIT license
 ├── package.json
 └── README.md
 ```
 
-> **Why root copies?** When you `ln -sf /path/to/FocusMemory ~/.qwen/extensions/focus-memory`, qwen-code expects `qwen-extension.json` at the symlink target's top level. The `qwen-code-extension/` directory contains the source; root copies ensure the extension loads correctly without nested path resolution.
+> **Note:** qwen-code expects `qwen-extension.json` (and `AGENTS.md`) at the top level of the symlink target, so the extension files live directly under the repo root rather than in a nested directory.
 
 <br>
 

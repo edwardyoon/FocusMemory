@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}reset-memory-flag.js",
+            "command": "node ${extensionPath}${/}hooks${/}reset-memory-flag.js",
             "name": "reset-memory-flag",
             "timeout": 3000
           }
@@ -60,7 +60,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}log-tool-call.js",
+            "command": "node ${extensionPath}${/}hooks${/}log-tool-call.js",
             "name": "log-search-memory",
             "timeout": 5000
           }
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}log-tool-call.js",
+            "command": "node ${extensionPath}${/}hooks${/}log-tool-call.js",
             "name": "log-remember-decision",
             "timeout": 5000
           }
@@ -82,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}log-tool-call.js",
+            "command": "node ${extensionPath}${/}hooks${/}log-tool-call.js",
             "name": "log-code-change",
             "timeout": 5000
           }
@@ -93,7 +93,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}check-memory-first.js",
+            "command": "node ${extensionPath}${/}hooks${/}check-memory-first.js",
             "name": "check-memory-first",
             "timeout": 5000
           }
@@ -106,7 +106,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${extensionPath}${/}qwen-code-extension${/}hooks${/}check-writeback.js",
+            "command": "node ${extensionPath}${/}hooks${/}check-writeback.js",
             "name": "check-writeback",
             "timeout": 8000
           }
