@@ -24,3 +24,12 @@
 - Always include `reasoning` (why this decision was made) — it's what makes causal chains useful.
 - Leave `topic_key` empty for auto-inference; the server matches against existing topics via embedding similarity.
 - If a new decision replaces an older approach on the same topic, **omit `supersedes`** — auto-supersede detection will find and link the prior active node via topic_key + embedding similarity (threshold ≥ 0.8).
+
+## Execution Principle: Attempt Over Deliberation (Cheaply Reversible Actions)
+
+If failure is cheap to recover from, attempt first — do not pre-verify success by reasoning. For actions with immediate error feedback and easy retry (e.g., file edit): just try the action, then use the actual error message as evidence for the next strategy.
+
+- **No exact-match worry**: whitespace/tabs, unicode variants, full-width/half-width characters — these are things the tool reports on failure, not things to predict by inference before executing.
+- **Try the simpler approach first**: when torn between two approaches (e.g., edit vs script splice), try the simpler one and switch only if it fails. If your conclusion is "try A, fall back to B", the deliberation spent reaching that conclusion must never be longer than the conclusion itself.
+- **Reasoning budget goes to analysis** (reading code, finding bugs, design decisions), not execution mechanics (how exactly to match a string). Judge execution mechanics from tool-call results.
+- **Checklist**: if you find yourself writing multiple paragraphs of "what if this fails?" — stop and just execute.
