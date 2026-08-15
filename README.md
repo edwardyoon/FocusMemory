@@ -232,7 +232,7 @@ qwen-code (upstream — zero modifications)
 
 FocusMemory/                         ← Single process: MCP stdio + Hono HTTP
     ├── index.js                     ← /v1/context/search endpoint
-    └── utils.js                     ← extractQueryFeatures, routeQuery, pruneAndSummarize
+    └── lib/utils.js                 ← extractQueryFeatures, routeQuery, pruneAndSummarize
 ```
 
 ### Execution flow
@@ -460,7 +460,8 @@ FocusMemory/
 │   ├── check-memory-first.js  # PreToolUse: deny grep/glob if memory not called
 │   ├── check-writeback.js     # Stop: detect completion, ask to record decision
 │   ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
-│   └── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
+│   ├── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
+│   └── package.json           # "type": "commonjs" — hooks are CJS even though the root package is ESM
 ├── LICENSE                 # MIT license
 ├── package.json
 └── README.md

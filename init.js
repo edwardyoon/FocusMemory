@@ -98,7 +98,7 @@ async function main() {
     }
   }
 
-  // Create .env.example if it doesn't exist in work-memory-mcp directory
+  // Create .env.example at the repo root if it doesn't exist
   const mcpDir = path.dirname(new URL(import.meta.url).pathname);
   const envExamplePath = path.join(mcpDir, ".env.example");
   const wroteEnv = await writeFileIfAbsent(envExamplePath, `# FocusMemory MCP Server Configuration
@@ -128,9 +128,9 @@ CONTEXT_API_TOKEN=focus-memory-local
 FOCUS_IGNORE_FILE=/path/to/your/project/.focusmemoryignore
 `);
   if (wroteEnv) {
-    console.log("[new] work-memory-mcp/.env.example");
+    console.log("[new] .env.example");
   } else {
-    console.log("[skip] work-memory-mcp/.env.example (already exists)");
+    console.log("[skip] .env.example (already exists)");
   }
 
   console.log(
@@ -138,10 +138,10 @@ FOCUS_IGNORE_FILE=/path/to/your/project/.focusmemoryignore
       `  Created: ${createdFiles} file(s), skipped: ${skippedFiles}\n\n` +
       "Next steps:\n" +
       `  1. Drop project docs (markdown) into ${root}/docs/\n` +
-      `  2. Copy .env.example to work-memory-mcp/.env and edit values\n` +
-      "  3. cd work-memory-mcp && npm run create-collections\n" +
+      `  2. Copy .env.example to .env and edit values\n` +
+      `  3. cd ${mcpDir} && npm run create-collections\n` +
       "  4. npm run auto-ingest --force    (initial full ingest)\n" +
-      "  5. Set up cron: */5 * * * * cd /path/to/work-memory-mcp && npm run auto-ingest\n",
+      `  5. Set up cron: */5 * * * * cd ${mcpDir} && npm run auto-ingest\n`,
   );
 }
 
