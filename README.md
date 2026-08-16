@@ -352,23 +352,75 @@ The PreToolUse and Stop hooks use four Node.js scripts in `hooks/`:
 |--------|---------|--------|
 | `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Set `memoryCalled = false`; preserve `decisionRecorded`/`decisionDeclined` across turns |
 | `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Track flags: `memoryCalled=true`, `decisionRecorded=true`, clear `decisionDeclined` on new code edits |
-| `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow |
+| `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow; bypass when input contains an explicit file path |
 | `check-writeback.js` | Stop (once per turn at end) | If code change + completion signal + !decisionRecorded → ask user; else allow |
 
 Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`.
 
-**State file format:**
+**State file format** (`~/.qwen/tmp/tool-calls/<session_id>.json`):
 ```json
-{ "memoryCalled": false, "decisionRecorded": false }
+{ "memoryCalled": false, "decisionRecorded": false, "decisionDeclined": false }
 ```
 
 - `memoryCalled`: reset every turn (read-side gate)
 - `decisionRecorded`: persists across turns until cleared by new code edits (write-back tracking)
 - `decisionDeclined`: set when user declines; cleared on next `edit`/`write_file` to allow re-asking for new work units
 
+**Companion logs:**
+- Audit log: `~/.qwen/tmp/tool-calls/<session_id>.jsonl` — one line per tracked tool call (`{ tool, ts }`), written by `log-tool-call.js`
+- Gate telemetry: `~/.qwen/tmp/focus-memory/gate-telemetry.jsonl` — one line per gate decision (`{ ts, session_id, hook, tool, decision, memoryCalled, reason? }`). First place to look when a `grep_search`/`glob` call was unexpectedly blocked or bypassed:
+
+```json
+{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":true}
+{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":false,"reason":"explicit_file_path_bypass"}
+```
+
+**Edge cases:**
+- **Explicit file path bypass** — `check-memory-first.js` allows `grep_search`/`glob` even with `memoryCalled = false` when the tool input contains an explicit file path (e.g. "read `/opt/project/src/foo.js`"); logged as `reason: explicit_file_path_bypass`
+- **No state file** — deny (`reason: no_state`); normally `reset-memory-flag.js` creates the file at turn start
+- **Fail-open on error** — malformed stdin, missing `session_id`, or an internal exception makes the hook allow the call. A command hook that crashes with exit code 1 (e.g. `Cannot find module` from a dangling symlink) is non-blocking per qwen-code's hook contract, so a broken hook registration silently disables the gate instead of bricking the agent
+
 **Output formats:**
 - PreToolUse: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`
 - Stop: `{ decision: "allow" }` or `{ decision: "ask", reason: "...", stopReason: "..." }`
+
+### Hook registration: extension manifest vs user settings
+
+The same scripts can be registered in two places — this deployment uses both:
+
+| Registration | Config | Path style | Scope |
+|---|---|---|---|
+| Extension manifest (primary) | `qwen-extension.json` → `hooks` | `${extensionPath}/hooks/*.js` | Every session where the extension is enabled |
+| User settings (legacy) | `~/.qwen/settings.json` → `hooks` | Absolute paths via a `<project>/.qwen/hooks` symlink | Every project for the user |
+
+The user-settings registration routes through a **directory symlink** so the scripts stay in one place:
+
+```bash
+ln -s /path/to/FocusMemory/hooks /path/to/project/.qwen/hooks
+```
+
+```json
+// ~/.qwen/settings.json (abridged)
+"hooks": {
+  "UserPromptSubmit": [
+    { "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/reset-memory-flag.js" }] }
+  ],
+  "PreToolUse": [
+    { "matcher": "^mcp__focus-memory__search_memory$",
+      "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/log-tool-call.js" }] },
+    { "matcher": "^(grep_search|glob)$",
+      "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/check-memory-first.js" }] }
+  ]
+}
+```
+
+For the three hooks registered in both places (`reset-memory-flag`, `search_memory` logging, `grep_search`/`glob` check), each fires twice per event — visible in the gate telemetry as two identical lines per gate decision. The scripts are idempotent (same state file, same flags), so behavior is unaffected. To keep a single execution path, delete the `hooks` block from `~/.qwen/settings.json` and rely on the extension manifest alone.
+
+> **Dangling symlink = silent gate loss.** If the repo moves and the symlink target is gone, every settings-registered hook exits 1 (`Cannot find module`) and — being non-blocking — the Hard Gate stops denying with no visible error. Verify after any repo restructure:
+>
+> ```bash
+> ls -laL /path/to/project/.qwen/hooks/   # must list the .js files, not "No such file or directory"
+> ```
 
 ### Design principles
 
