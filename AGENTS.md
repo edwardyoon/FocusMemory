@@ -33,6 +33,14 @@ The `check-memory-first` hook now intercepts grep_search/glob calls and can auto
 - If search_memory results are insufficient for code structure questions, ALWAYS proceed to step 2 (search_code), then step 3 (query_graph). Do NOT jump directly to grep/glob.
 - Only skip to step 4 when you have concrete file paths from earlier steps and need exact line numbers or full context.
 
+## Source Attribution — `[출처 : file]` Tags
+The `search_memory` summary tags each fact with its source file, e.g. `[출처 : docs/blog-system.md]`. The summary is a compressed view — the tagged file is the ground truth.
+
+- **When you need more detail than the summary gives, `read_file` the tagged file directly.** Do not guess at the missing detail and do not re-run the search — the tag is a verified pointer to a real file in the workspace.
+- Multiple files in one tag (`[출처 : a.md, b.md]`) mean the fact spans them; read the first, then the rest only if the first is insufficient.
+- A tag lists only paths that were present in the search evidence — if a tag looks wrong, verify with `glob` before relying on it.
+- Facts without a tag come from non-file backends (work_memory, graph) — follow steps 2-3 for those.
+
 ## Rules
 - Concept/behavior/architecture questions → search_memory first, then search_code/query_graph for code details
 - "Why was this done", "Have we tried this before" → must call search_memory first (decision_chains)

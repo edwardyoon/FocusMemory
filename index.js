@@ -1577,8 +1577,12 @@ async function doSearch(query) {
   const features = extractQueryFeatures(query);
   const route = routeQuery(query, features);
 
-  const vectorTargets = route.targets.filter((t) => t !== "graph");
+  // Only real Qdrant vector collections — project_facts lives in Meilisearch, not Qdrant.
+  // Routing a query to project_facts must not trigger qSearch("project_facts") (collection absent → throw).
+  const QDRANT_VECTOR_BACKENDS = ["work_memory", "decision_chains"];
+  const vectorTargets = route.targets.filter((t) => QDRANT_VECTOR_BACKENDS.includes(t));
   const graphTarget = route.targets.includes("graph") ? "graph" : null;
+  const meiliTarget = route.targets.includes("project_facts");
 
   let allResults = [];
 
@@ -1589,7 +1593,7 @@ async function doSearch(query) {
     vector = await embed(query);
   }
 
-  if (vectorTargets.length > 0) {
+  if (vectorTargets.length > 0 || meiliTarget) {
     const perCollectionLimit = 10;
 
     const searches = vectorTargets.map(async (col) => {
