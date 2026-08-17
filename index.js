@@ -35,7 +35,26 @@ function log(...args) {
 }
 const BGE_URL = process.env.BGE_URL || "http://127.0.0.1:8080/v1/embeddings";
 
-const qdrant = new QdrantClient({ url: QDRANT_URL });
+const QDRANT_TIMEOUT_MS = parseInt(process.env.QDRANT_TIMEOUT_MS || "10000", 10);
+const MEILI_TIMEOUT_MS = parseInt(process.env.MEILI_TIMEOUT_MS || "8000", 10);
+
+const qdrant = new QdrantClient({ url: QDRANT_URL, timeout: QDRANT_TIMEOUT_MS });
+
+/**
+ * Promise.race-based timeout wrapper.
+ * Rejects with a descriptive error if the operation exceeds ms.
+ */
+async function withTimeout(promise, ms, label = "operation") {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Compatibility wrapper for Qdrant v1.x — replaces the deleted search() API.
@@ -44,13 +63,17 @@ const qdrant = new QdrantClient({ url: QDRANT_URL });
  */
 async function qSearch(collection, opts = {}) {
   const { vector, filter, limit, with_payload, score_threshold } = opts;
-  const result = await qdrant.query(collection, {
-    query: vector,
-    ...(filter && { filter }),
-    ...(limit != null && { limit }),
-    ...(with_payload && { with_payload }),
-    ...(score_threshold != null && { score_threshold }),
-  });
+  const result = await withTimeout(
+    qdrant.query(collection, {
+      query: vector,
+      ...(filter && { filter }),
+      ...(limit != null && { limit }),
+      ...(with_payload && { with_payload }),
+      ...(score_threshold != null && { score_threshold }),
+    }),
+    QDRANT_TIMEOUT_MS,
+    `qSearch(${collection})`
+  );
   return (result.points || []).map((p) => ({ id: p.id, score: p.score ?? 0, payload: p.payload }));
 }
 
@@ -79,11 +102,15 @@ async function searchCodeStructure(query, options = {}) {
   const filter = language ? `language = '${language}'` : null;
 
   try {
-    const result = await meiliCodeStructureIndex.search(query, {
-      limit,
-      filter,
-      attributesToRetrieve: ["filepath", "filename", "dirname", "extension", "language", "entities", "entity_names", "imports", "line_count", "description"],
-    });
+    const result = await withTimeout(
+      meiliCodeStructureIndex.search(query, {
+        limit,
+        filter,
+        attributesToRetrieve: ["filepath", "filename", "dirname", "extension", "language", "entities", "entity_names", "imports", "line_count", "description"],
+      }),
+      MEILI_TIMEOUT_MS,
+      "searchCodeStructure"
+    );
 
     return result.hits.map((h) => ({
       filepath: h.filepath,
@@ -112,11 +139,15 @@ async function searchMeili(query, options = {}) {
   const filter = source ? `source = '${source}'` : null;
 
   try {
-    const result = await meiliIndex.search(query, {
-      limit,
-      filter,
-      attributesToRetrieve: ["title", "content", "filepath", "source", "uid"],
-    });
+    const result = await withTimeout(
+      meiliIndex.search(query, {
+        limit,
+        filter,
+        attributesToRetrieve: ["title", "content", "filepath", "source", "uid"],
+      }),
+      MEILI_TIMEOUT_MS,
+      "searchMeili"
+    );
 
     return result.hits.map((h) => ({
       score: _meiliScoreToCosine(h._formatted?.score ?? h._scoresDetails),
@@ -281,16 +312,23 @@ server.registerTool(
     let allResults = [];
     let chainOutput = null;
 
+    // Cache embedding — compute once, reuse for all vector operations in this call
+    let _cachedVector = null;
+    async function getVector() {
+      if (!_cachedVector) _cachedVector = await embed(query);
+      return _cachedVector;
+    }
+
     // ── P6: Knowledge/architecture queries → docs FIRST, then code fallback ──
     const isKnowledgeQuery = features.is_knowledge || (features.identifier_ratio < 0.1 && !features.is_causal && !features.is_structural);
 
     // Decision chains: causal query → trace full chain (no SUMMARY_LLM summary)
     if (chainTarget === "decision_chains") {
-      const vector = await embed(query);
+      const vector = await getVector();
       if (vector) {
         const hits = await qSearch("decision_chains", { vector, limit: 1 });
         if (hits.length > 0 && hits[0]?.payload?.decision_id) {
-          chainOutput = await traceChainInternal(hits[0].payload.decision_id);
+          chainOutput = await walkChain(hits[0].payload.decision_id, "both");
         }
       }
     }
@@ -306,8 +344,8 @@ server.registerTool(
       // Fetch more raw results for pruning — the LLM will compress them down
       const perCollectionLimit = Math.max(limit * 2, 10);
 
-      // Embed once, reuse for all vector backends
-      const vector = await embed(query);
+      // Reuse cached embedding (already computed above if chainTarget ran)
+      const vector = await getVector();
 
       const searches = vectorTargets.map(async (col) => {
         const results = await qSearch(col, {
@@ -387,7 +425,7 @@ server.registerTool(
           allResults.push(...fbGraph);
         } else {
           try {
-            const fbVector = await embed(query);
+            const fbVector = await getVector();
             if (fbVector) {
               const fbResults = await qSearch(fb, { vector: fbVector, limit: 5, with_payload: true });
               allResults.push(...fbResults.map(r => ({ ...r, _collection: fb })));
@@ -526,15 +564,30 @@ async function searchGraph(query, limit) {
   const results = [];
   const lower = query.toLowerCase();
 
-  // Extract function name: English identifier (camelCase/PascalCase/snake_case, 4+ chars)
-  // Handles queries like "who calls callRestAPIAsync", "getCwd() function definition", "foo bar function"
-  const fnMatch = query.match(/([a-zA-Z_]\w{3,})/);
+  // Extract function name with priority: camelCase/PascalCase > snake_case > long lowercase
+  // Avoids matching English words like "who", "calls", "function", "file"
+  const FILE_STOPWORDS = new Set(["who", "what", "which", "where", "how", "why", "calls", "called", "calling", "callers", "function", "functions", "method", "methods", "file", "files", "define", "defined", "definition", "this", "that", "these", "those", "does", "does", "depend", "depends", "dependency", "using", "use", "uses", "return", "returns", "within", "inside", "between", "across", "from", "into", "over", "under"]);
+
+  function extractFunctionName(q) {
+    // 1. camelCase / PascalCase (e.g. callRestAPIAsync, getDatabaseConnection)
+    const camel = q.match(/\b([a-z]+(?:[A-Z][a-z0-9]*)+|[A-Z][a-z0-9]*(?:[A-Z][a-z0-9]*)+)\b/);
+    if (camel && !FILE_STOPWORDS.has(camel[1].toLowerCase())) return camel[1];
+    // 2. snake_case (e.g. call_rest_api, get_db_connection)
+    const snake = q.match(/\b([a-z]+(?:_[a-z0-9]+)+)\b/);
+    if (snake && !FILE_STOPWORDS.has(snake[1])) return snake[1];
+    // 3. Long lowercase identifier (6+ chars, not a stopword)
+    const lower = q.match(/\b([a-z][a-z0-9]{5,})\b/);
+    if (lower && !FILE_STOPWORDS.has(lower[1])) return lower[1];
+    return null;
+  }
+
+  const fnName = extractFunctionName(query);
   const fileMatch = query.match(/[`'"]?([\w/.-]+\.\w{2,4})[`'"]?/);
 
-  if (fnMatch) {
+  if (fnName) {
     // Search graph_nodes by function name
     const nodeRes = await qdrant.scroll("graph_nodes", {
-      filter: { must: [{ key: "name", match: { value: fnMatch[1] } }] },
+      filter: { must: [{ key: "name", match: { value: fnName } }] },
       limit,
       with_payload: true,
     });
@@ -549,7 +602,7 @@ async function searchGraph(query, limit) {
 
     // Also search edges (callers of this function)
     const edgeRes = await qdrant.scroll("graph_edges", {
-      filter: { must: [{ key: "target_name", match: { value: fnMatch[1] } }] },
+      filter: { must: [{ key: "target_name", match: { value: fnName } }] },
       limit,
       with_payload: true,
     });
@@ -598,19 +651,24 @@ function isStructuralQuery(lower) {
 }
 
 /**
- * Internal: trace full causal chain from an anchor decision_id.
- * Returns formatted string (same logic as trace_decision_chain tool).
+ * Shared: trace full causal chain from an anchor decision_id.
+ * Returns formatted string with direction control.
+ * Used by both search_memory (internal) and trace_decision_chain tool.
  */
-async function traceChainInternal(anchorId) {
+async function walkChain(anchorId, direction = "both") {
   const chain = [];
   const visited = new Set();
 
   async function getById(id) {
-    const results = await qdrant.scroll("decision_chains", {
-      filter: { must: [{ key: "decision_id", match: { value: id } }] },
-      limit: 1,
-      with_payload: true,
-    });
+    const results = await withTimeout(
+      qdrant.scroll("decision_chains", {
+        filter: { must: [{ key: "decision_id", match: { value: id } }] },
+        limit: 1,
+        with_payload: true,
+      }),
+      QDRANT_TIMEOUT_MS,
+      "decision_chains.getById"
+    );
     return results.points[0] || null;
   }
 
@@ -632,8 +690,8 @@ async function traceChainInternal(anchorId) {
     if (node.payload.superseded_by) await walkForward(node.payload.superseded_by);
   }
 
-  await walkBackward(anchorId);
-  await walkForward(anchorId);
+  if (direction !== "forward") await walkBackward(anchorId);
+  if (direction !== "backward") await walkForward(anchorId);
 
   const topicKey = chain[0]?.payload?.topic_key || "(unknown)";
   let output = `${topicKey} chain (${chain.length} step${chain.length > 1 ? "s" : ""}):\n\n`;
@@ -890,63 +948,7 @@ server.registerTool(
       return { content: [{ type: "text", text: "No related decisions found." }] };
     }
 
-    const chain = [];
-    const visited = new Set();
-
-    async function getById(id) {
-      const results = await qdrant.scroll("decision_chains", {
-        filter: { must: [{ key: "decision_id", match: { value: id } }] },
-        limit: 1,
-        with_payload: true,
-      });
-      return results.points[0] || null;
-    }
-
-    async function walkBackward(id) {
-      if (!id || visited.has(id)) return;
-      visited.add(id);
-      const node = await getById(id);
-      if (!node) return;
-      chain.unshift(node);
-      if (node.payload.supersedes) await walkBackward(node.payload.supersedes);
-    }
-
-    async function walkForward(id) {
-      if (!id || visited.has(id)) return;
-      visited.add(id);
-      const node = await getById(id);
-      if (!node) return;
-      if (!chain.find((c) => c.id === node.id)) chain.push(node);
-      if (node.payload.superseded_by) await walkForward(node.payload.superseded_by);
-    }
-
-    if (direction !== "forward") await walkBackward(anchor);
-    if (direction !== "backward") await walkForward(anchor);
-
-    // Format output — preserve structure, no SUMMARY_LLM summary
-    const topicKey = chain[0]?.payload?.topic_key || "(unknown)";
-    let output = `${topicKey} chain (${chain.length} step${chain.length > 1 ? "s" : ""}):\n\n`;
-
-    for (let i = 0; i < chain.length; i++) {
-      const n = chain[i].payload;
-      const date = new Date(n.created_at).toISOString().split("T")[0];
-      const statusTag = n.status === "superseded" ? " (superseded)" : n.status === "active" ? " ← current" : "";
-      output += `${i + 1}. [${date}] ${n.content}${statusTag}\n`;
-      if (n.reasoning) {
-        output += `   → Reason: ${n.reasoning}\n`;
-      }
-      if (n.file_paths?.length > 0) {
-        output += `   → Files: ${n.file_paths.join(", ")}\n`;
-      }
-      if (n.supersedes) {
-        const supersededIdx = chain.findIndex((c) => c.payload.decision_id === n.supersedes);
-        if (supersededIdx >= 0) {
-          output += `   → Replaces: #${supersededIdx + 1}\n`;
-        }
-      }
-      output += "\n";
-    }
-
+    const output = await walkChain(anchor, direction);
     return { content: [{ type: "text", text: output }] };
   }
 );
@@ -1669,6 +1671,12 @@ httpApp.post("/v1/context/search", async (c) => {
     return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
   }
 
+  // Skip trivial queries — no point running full search + LLM summary for "hi" or "2+2"
+  if (query.length < 10 || /^[\d+\-*/().\s=]+$/.test(query) || /^(hi|hello|hey|yo|ok|thanks|done|yes|no)\s*[!.]?\s*$/i.test(query)) {
+    log(`[Hook /v1/context/search] skip trivial query: "${query}"`);
+    return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
+  }
+
   log(`[Hook /v1/context/search] source=hook, query="${query.slice(0, 80)}"`);
 
   // Search core (same logic as search_memory MCP tool)
@@ -1806,35 +1814,40 @@ httpApp.get("/api/stats", async (c) => {
   return c.json(stats);
 });
 
+/** Shared: read and aggregate gate telemetry JSONL */
+async function readGateStats() {
+  const fsSync = await import("fs");
+  const pathMod = await import("path");
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  const telemetryPath = pathMod.default.join(home, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
+  if (!fsSync.default.existsSync(telemetryPath)) {
+    return { total: 0, memoryGate: { allow: 0, deny: 0 }, writeBackGate: { ask: 0, allow: 0, skip: 0 }, userResponses: { yes: 0, no: 0 } };
+  }
+  const lines = fsSync.default.readFileSync(telemetryPath, "utf-8").trim().split("\n").filter(Boolean);
+  const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  const memoryGate = { allow: 0, deny: 0 };
+  const writeBackGate = { ask: 0, allow: 0, skip: 0 };
+  let yes = 0, no = 0;
+  for (const e of entries) {
+    if (e.hook === "check-memory-first") {
+      if (e.decision === "allow") memoryGate.allow++;
+      else if (e.decision === "deny") memoryGate.deny++;
+    } else if (e.hook === "check-writeback") {
+      if (e.decision === "ask") writeBackGate.ask++;
+      else if (e.decision === "allow") writeBackGate.allow++;
+      else if (e.decision === "skip") writeBackGate.skip++;
+    }
+    if (e.event === "user_response") {
+      if (e.decision === "yes") yes++;
+      else if (e.decision === "no") no++;
+    }
+  }
+  return { total: entries.length, memoryGate, writeBackGate, userResponses: { yes, no } };
+}
+
 httpApp.get("/api/gate-stats", async (c) => {
   try {
-    const fsSync = await import("fs");
-    const pathMod = await import("path");
-    const home = process.env.HOME || process.env.USERPROFILE || ".";
-    const telemetryPath = pathMod.default.join(home, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
-    if (!fsSync.default.existsSync(telemetryPath)) {
-      return c.json({ total: 0, memoryGate: { allow: 0, deny: 0 }, writeBackGate: { ask: 0, allow: 0, skip: 0 }, userResponses: { yes: 0, no: 0 } });
-    }
-    const lines = fsSync.default.readFileSync(telemetryPath, "utf-8").trim().split("\n").filter(Boolean);
-    const entries = lines.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    const memoryGate = { allow: 0, deny: 0 };
-    const writeBackGate = { ask: 0, allow: 0, skip: 0 };
-    let yes = 0, no = 0;
-    for (const e of entries) {
-      if (e.hook === "check-memory-first") {
-        if (e.decision === "allow") memoryGate.allow++;
-        else if (e.decision === "deny") memoryGate.deny++;
-      } else if (e.hook === "check-writeback") {
-        if (e.decision === "ask") writeBackGate.ask++;
-        else if (e.decision === "allow") writeBackGate.allow++;
-        else if (e.decision === "skip") writeBackGate.skip++;
-      }
-      if (e.event === "user_response") {
-        if (e.decision === "yes") yes++;
-        else if (e.decision === "no") no++;
-      }
-    }
-    return c.json({ total: entries.length, memoryGate, writeBackGate, userResponses: { yes, no } });
+    return c.json(await readGateStats());
   } catch (err) {
     return c.json({ error: err.message }, 500);
   }
@@ -1854,33 +1867,11 @@ try {
     return cD.json(stats);
   });
   dashApp.get("/api/gate-stats", async (cD) => {
-    const fsSync2 = await import("fs");
-    const pathMod2 = await import("path");
-    const home2 = process.env.HOME || process.env.USERPROFILE || ".";
-    const telemetryPath2 = pathMod2.default.join(home2, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
-    if (!fsSync2.default.existsSync(telemetryPath2)) {
-      return cD.json({ total: 0, memoryGate: { allow: 0, deny: 0 }, writeBackGate: { ask: 0, allow: 0, skip: 0 }, userResponses: { yes: 0, no: 0 } });
+    try {
+      return cD.json(await readGateStats());
+    } catch (err) {
+      return cD.json({ error: err.message }, 500);
     }
-    const lines2 = fsSync2.default.readFileSync(telemetryPath2, "utf-8").trim().split("\n").filter(Boolean);
-    const entries2 = lines2.map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-    const memoryGate2 = { allow: 0, deny: 0 };
-    const writeBackGate2 = { ask: 0, allow: 0, skip: 0 };
-    let yes2 = 0, no2 = 0;
-    for (const e of entries2) {
-      if (e.hook === "check-memory-first") {
-        if (e.decision === "allow") memoryGate2.allow++;
-        else if (e.decision === "deny") memoryGate2.deny++;
-      } else if (e.hook === "check-writeback") {
-        if (e.decision === "ask") writeBackGate2.ask++;
-        else if (e.decision === "allow") writeBackGate2.allow++;
-        else if (e.decision === "skip") writeBackGate2.skip++;
-      }
-      if (e.event === "user_response") {
-        if (e.decision === "yes") yes2++;
-        else if (e.decision === "no") no2++;
-      }
-    }
-    return cD.json({ total: entries2.length, memoryGate: memoryGate2, writeBackGate: writeBackGate2, userResponses: { yes: yes2, no: no2 } });
   });
 
   const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort });

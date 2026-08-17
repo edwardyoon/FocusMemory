@@ -154,10 +154,41 @@ async function ingestPlanFile(filePath) {
 
 // ─── Main ──────────────────────────────────────────────────────────
 
+const LOCK_FILE = "/tmp/focusmemory-ingest.lock";
+const LOCK_STALE_MS = 30 * 60 * 1000; // 30 min
+
+async function acquireLock() {
+  try {
+    const existing = await fs.readFile(LOCK_FILE, "utf-8").catch(() => null);
+    if (existing) {
+      const { pid, ts } = JSON.parse(existing);
+      if (Date.now() - ts < LOCK_STALE_MS) {
+        // Check if the PID is still alive
+        try {
+          process.kill(pid, 0);
+          console.error(`[lock] Another ingest is running (PID ${pid}, started ${new Date(ts).toISOString()}). Exiting.`);
+          process.exit(0);
+        } catch {
+          // PID dead — stale lock, proceed
+        }
+      }
+    }
+    await fs.writeFile(LOCK_FILE, JSON.stringify({ pid: process.pid, ts: Date.now() }), "utf-8");
+  } catch {
+    // Lock file write failed — proceed without lock (fail-open)
+  }
+}
+
+async function releaseLock() {
+  try { await fs.unlink(LOCK_FILE); } catch {}
+}
+
 async function main() {
   const forceAll = process.argv.includes("--force") || process.argv.includes("-f");
   const docsOnly = process.argv.includes("--docs-only");
   const plansOnly = process.argv.includes("--plans-only");
+
+  await acquireLock();
 
   console.log("=== Auto Ingest ===");
   if (forceAll) console.log("[mode] FORCE: re-ingesting all files\n");
@@ -350,9 +381,11 @@ async function main() {
   }
 
   console.log("=== Done ===");
+  await releaseLock();
 }
 
 main().catch((err) => {
   console.error("Error:", err);
+  releaseLock();
   process.exit(1);
 });

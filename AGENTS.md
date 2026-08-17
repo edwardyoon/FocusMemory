@@ -1,74 +1,145 @@
-# FocusMemory Search Protocol (Hard Gate)
+# FocusMemory — Agent Search Protocol
 
-## Required Order — Always follow this chain, do NOT skip steps
+## Core Principle
 
-1. **search_memory** — Query ALL backends: work_memory, decision_chains, project_facts, **code_structure**, **code_chunks**. This is your FIRST call for ANY question about the codebase.
-   - `search_memory` indexes both past decisions AND live code (file paths, functions, classes, imports via Meilisearch + embedding-based chunks via Qdrant).
-   - If results contain structural/code hits → proceed to step 2-3 for details.
-   - If results are empty or only historical → still call step 2-3 if the question is about code structure/logic.
+**Minimize round trips.** Each tool call costs tokens and latency. Choose the single tool that answers your question. Only chain tools when the first result explicitly points to what's missing.
 
-2. **search_code** — Natural language code search: "Where is this logic?", "Is there a similar pattern?", "How does X work?". Uses embedding-based semantic matching against indexed code chunks (Qdrant).
-   - Call this AFTER search_memory when you need actual code content, not just file paths or decision history.
-   - Use `entity_type` filter for targeted searches: `"function"`, `"method"`, `"class"`.
+## Decision Tree
 
-3. **query_graph** — Code dependency questions: "Who calls X?", "What's in Y file?", "What does Z depend on?". Uses Meilisearch code_structure index (AST-extracted entities, imports, file metadata).
-   - Call this AFTER search_code when you need call relationships, function definitions, or precise structural queries.
+```
+Question received
+│
+├─ "Why was X done?" / "History of decision" / "What changed and why?"
+│  → trace_decision_chain(query="X")
+│  └─ If chain result is insufficient → search_memory(query) for broader context
+│
+├─ "Who calls X?" / "What does Y depend on?" / "Trace the call chain"
+│  → trace_references(target="X")
+│  └─ If no graph node found → search_file_structure(query="X") to find correct name
+│
+├─ "I need to work on file Z" / "Show me the context around Z"
+│  → get_context_bundle(filepath="Z")
+│  └─ Replaces: read_file + search_code + query_graph (3 calls → 1 call)
+│
+├─ "Where is the logic for X?" / "How does X work?" (code content)
+│  → search_code(query="X")
+│  └─ If results point to a specific file → get_context_bundle(filepath) for full context
+│
+├─ "What files contain X?" / "Find the file for X" (file location)
+│  → search_file_structure(query="X")
+│  └─ Returns exact filepaths + entities → use read_file or get_context_bundle
+│
+├─ "What did we decide about X?" / "Is there a past bug fix for X?"
+│  → search_memory(query="X")
+│  └─ If it contains decision context → trace_decision_chain for full chain
+│
+├─ "What's in the project docs?" / "DB schema" / "API spec"
+│  → search_project_facts(query)
+│
+├─ "What work was done last session?" / "Any open todos?"
+│  → search_work_memory(query)
+│
+└─ "General question about the codebase" (no clear category)
+   → search_memory(query) — it auto-routes to the best backend
+```
 
-4. **grep_search / glob / read_file** — Verify exact line numbers, read full context, match symbol names. Only use these AFTER steps 1-3 have narrowed down the target files/areas.
-   - `grep_search` for exact regex patterns in known files.
-   - `glob` for file pattern matching when you know the naming convention.
-   - `read_file` to read full context of identified targets.
+## Tool Reference
 
-5. Code modification or answer.
+| Tool | One-line purpose | Use when... | Replaces |
+|------|-----------------|-------------|----------|
+| `search_memory` | Unified router → best backend + prune | You don't know which backend to hit | 2-3 separate calls |
+| `search_code` | Semantic search over code chunks | You need the actual code logic | grep + read (for "how does X work?") |
+| `query_graph` | Code structure lookup (Meilisearch) | You need file entities/imports | glob + grep for structure |
+| `search_file_structure` | File name/path/keyword → filepath | You need to locate a file | glob + grep |
+| `get_context_bundle` | File + chunks + callers in one call | You're about to read_file + search separately | read_file + search_code + query_graph |
+| `trace_references` | Multi-hop caller/callee trace | You need dependency chains | Repeated query_graph calls |
+| `trace_decision_chain` | Full causal history of a decision | "Why was X built this way?" | search_memory + manual chain walk |
+| `search_work_memory` | Direct past-session search | Specific "what did we do last time?" | — |
+| `search_project_facts` | Direct docs/plans search | Specific "what's in the schema?" | — |
+| `remember_decision` | Write a decision to memory | Task complete with tests passing | — |
+| `search_web` | Web search via local server | External knowledge needed | — |
 
-## Note on Hook Enforcement
-The `check-memory-first` hook now intercepts grep_search/glob calls and can auto-inject relevant memory/code search results before the tool executes. When you see a `## Search Results (Auto-injected)` header, treat step 1 (search_memory) as already satisfied — do not re-call it manually. This Hard Gate exists to narrow the search space before falling back to raw grep/glob, not to force a fixed number of tool calls; if the hook has already surfaced the relevant files, proceed directly to reading/editing them.
+## Stop Conditions (when to STOP searching)
 
-## When to Skip Steps (Exceptions)
-- User explicitly names a file path ("Read /path/to/file.php") → go directly to `read_file`.
-- User asks for exact symbol match with known name (`grep_search` only).
-- Hook already injected context (`## Search Results (Auto-injected)` header present) — do NOT re-search with same keywords.
+- You have a concrete file path and line number → **read_file or get_context_bundle**, no more searching
+- `search_memory` returned a relevant result with `[출처: file.md]` tag → **read_file that tag**, don't re-search
+- `get_context_bundle` already returned file content + callers → **start coding**, no more context gathering
+- You've called 2 tools and both point to the same file → **stop, you have enough context**
+- Your answer only requires a single fact that's already in the conversation → **answer directly**
 
-## Conditional Re-search Rules
-- If search_memory results are insufficient for code structure questions, ALWAYS proceed to step 2 (search_code), then step 3 (query_graph). Do NOT jump directly to grep/glob.
-- Only skip to step 4 when you have concrete file paths from earlier steps and need exact line numbers or full context.
+**Rule: maximum 3 search calls per question before you MUST act on what you have.**
 
-## Source Attribution — `[출처 : file]` Tags
-The `search_memory` summary tags each fact with its source file, e.g. `[출처 : docs/blog-system.md]`. The summary is a compressed view — the tagged file is the ground truth.
+## Concrete Examples
 
-- **When you need more detail than the summary gives, `read_file` the tagged file directly.** Do not guess at the missing detail and do not re-run the search — the tag is a verified pointer to a real file in the workspace.
-- Multiple files in one tag (`[출처 : a.md, b.md]`) mean the fact spans them; read the first, then the rest only if the first is insufficient.
-- A tag lists only paths that were present in the search evidence — if a tag looks wrong, verify with `glob` before relying on it.
-- Facts without a tag come from non-file backends (work_memory, graph) — follow steps 2-3 for those.
+### Example 1: "Where is the Redis connection logic?"
+```
+1. search_code(query="Redis connection pool initialization")
+   → Returns: redis.js:45-80, score 0.87
+2. get_context_bundle(filepath="verbally_server/redis.js")
+   → Full file + 3 related chunks + callers
+→ DONE. Start coding. (2 calls, not 4-5)
+```
 
-## Rules
-- Concept/behavior/architecture questions → search_memory first, then search_code/query_graph for code details
-- "Why was this done", "Have we tried this before" → must call search_memory first (decision_chains)
-- Code structure/logic questions → search_memory → search_code → query_graph → grep_search (full chain)
-- Exact symbol name AND file known → can go directly to grep_search; otherwise use full search chain
+### Example 2: "Why was the auth middleware changed from JWT to session?"
+```
+1. trace_decision_chain(query="auth middleware JWT session")
+   → Returns full chain:
+     [2025-03-10] "Use JWT" (superseded)
+     [2025-07-22] "Switch to session-based" — reasoning: "stateless JWT caused 401 storms..."
+     [2026-01-15] "Session with Redis backing" — reasoning: "in-memory sessions lost on pm2 restart"
+→ DONE. You have the full "why". (1 call)
+```
 
-## Tool Coverage Reference
-| Backend | Index | Content | Access via |
-|---------|-------|---------|-----------|
-| work_memory | filesystem | Past sessions, decisions, todos | `search_memory`, `search_work_memory` |
-| decision_chains | filesystem | Causal chains of why/how | `trace_decision_chain` |
-| project_facts | Meilisearch (docs_plans) | Fixed architecture, DB schema, API specs | `search_project_facts` |
-| code_structure | Meilisearch (code_structure) | File paths, entities (functions/classes), imports | `query_graph` |
-| code_chunks | Qdrant | Semantic code chunks with embeddings | `search_code` |
+### Example 3: "What files reference the `callRestAPIAsync` function?"
+```
+1. trace_references(target="callRestAPIAsync", direction="callers", max_hops=2)
+   → Returns: 12 callers across 8 files, 2-hop chain
+→ DONE. (1 call)
+```
 
-## Write-back Rules (remember_decision)
-- Do not save on every file edit.
-- **Trigger: call `remember_decision` once after a task completes** — specifically when tests pass, a feature is delivered, or a bug root cause is identified and fixed.
-- What to save: key decisions, bug root causes and fixes, architecture changes.
-- Always include `reasoning` (why this decision was made) — it's what makes causal chains useful.
-- Leave `topic_key` empty for auto-inference; the server matches against existing topics via embedding similarity.
-- If a new decision replaces an older approach on the same topic, **omit `supersedes`** — auto-supersede detection will find and link the prior active node via topic_key + embedding similarity (threshold ≥ 0.8).
+### Example 4: "I need to add a new API endpoint in the place module"
+```
+1. search_memory(query="place module API endpoint pattern")
+   → Returns: decision "REST API pattern uses Hono routes in /routes/" + [출처: docs/api-patterns.md]
+2. get_context_bundle(filepath="verbally_server/routes/place.js")
+   → Full route file + existing endpoint patterns + related chunks
+→ DONE. You see the pattern, start coding. (2 calls)
+```
 
-## Execution Principle: Attempt Over Deliberation (Cheaply Reversible Actions)
+## Hard Gate Rules (physically enforced by hooks)
 
-If failure is cheap to recover from, attempt first — do not pre-verify success by reasoning. For actions with immediate error feedback and easy retry (e.g., file edit): just try the action, then use the actual error message as evidence for the next strategy.
+| Rule | Mechanism | Effect |
+|------|-----------|--------|
+| `grep_search`/`glob` blocked until `search_memory` called | PreToolUse hook (deny) | You physically cannot grep before memory search |
+| Bypass: explicit file path in query | PreToolUse hook (allow) | `grep_search(pattern, path="/specific/file.js")` is allowed without memory |
+| `## Search Results (Auto-injected)` header present | UserPromptSubmit HTTP hook | Memory search is already satisfied — do NOT re-call `search_memory` with same keywords |
+| Completion signal + code change → ask to record | Stop hook (ask) | You'll be asked to call `remember_decision` at task completion |
 
-- **No exact-match worry**: whitespace/tabs, unicode variants, full-width/half-width characters — these are things the tool reports on failure, not things to predict by inference before executing.
-- **Try the simpler approach first**: when torn between two approaches (e.g., edit vs script splice), try the simpler one and switch only if it fails. If your conclusion is "try A, fall back to B", the deliberation spent reaching that conclusion must never be longer than the conclusion itself.
-- **Reasoning budget goes to analysis** (reading code, finding bugs, design decisions), not execution mechanics (how exactly to match a string). Judge execution mechanics from tool-call results.
-- **Checklist**: if you find yourself writing multiple paragraphs of "what if this fails?" — stop and just execute.
+**Key**: When you see `[Hard Gate] Call mcp__focus-memory__search_memory before using grep_search/glob` in a tool result, it means the hook blocked you. Call `search_memory` first, then retry your grep.
+
+## Failure Modes & Recovery
+
+| Failure | Symptom | Recovery |
+|---------|---------|----------|
+| Qdrant unreachable | "Qdrant search failed: connect ECONNREFUSED" | Proceed with `search_file_structure` (Meilisearch) or direct file reads |
+| Meilisearch unreachable | "Meilisearch search failed" | Use `search_code` (Qdrant vector) instead |
+| BGE embedding server down | "Embedding failed" on search_code/search_memory | Use `search_file_structure` or `query_graph` (keyword-based, no embedding needed) |
+| Empty results from search_memory | "No relevant results found" | Try `search_code` with different phrasing, or `search_file_structure` with a keyword |
+| Graph nodes stale | "No node found for 'X'" from trace_references | Call `search_file_structure(query="X")` to verify the correct name |
+| File not found from get_context_bundle | "File not found: path" | Call `search_file_structure(query="filename")` to get correct path |
+| SUMMARY_LLM unavailable | Results are unpruned (raw) | Not an error — results are just longer. Proceed with them |
+
+## Write-back (remember_decision)
+
+Call **once per completed task** when:
+- Tests pass and a feature is delivered
+- A bug root cause is identified and fixed
+- An architectural decision is made
+
+**Do NOT call** on every file edit or intermediate step.
+
+Parameters:
+- `summary_text` — what was decided
+- `reasoning` — why (this is what makes chains useful)
+- `topic_key` — leave empty for auto-inference
+- `supersedes` — omit; auto-detection handles it via embedding similarity
