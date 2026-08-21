@@ -4,19 +4,19 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FocusMemory — living knowledge base for AI coding agents</title>
-<meta name="description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
+<title>FocusMemory — memory-based agent workflow management</title>
+<meta name="description" content="Memory-based agent workflow management. Source code structure, work history, and task memory as a single shared context — eliminating grep, cold boot, and re-derivation.">
 
 <!-- Open Graph -->
-<meta property="og:title" content="FocusMemory — living knowledge base for AI coding agents">
-<meta property="og:description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
+<meta property="og:title" content="FocusMemory — memory-based agent workflow management">
+<meta property="og:description" content="Memory-based agent workflow management. Source code structure, work history, and task memory as a single shared context.">
 <meta property="og:image" content="https://cdn.udanax.org/logos/focus-memory-qwen-extension.png">
 <meta property="og:type" content="website">
 
 <!-- Twitter Card -->
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="FocusMemory — living knowledge base for AI coding agents">
-<meta name="twitter:description" content="Turn your workspace into a living knowledge base. Pre-indexed decisions, code structure, and semantic history with scoring-based routing that cuts token waste in source exploration by ~49%.">
+<meta name="twitter:title" content="FocusMemory — memory-based agent workflow management">
+<meta name="twitter:description" content="Source code, work history, and task memory as a single shared context. Eliminates grep, cold boot, and re-derivation.">
 <meta name="twitter:image" content="https://cdn.udanax.org/logos/focus-memory-qwen-extension.png">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -187,6 +187,7 @@
     <div class="nav-links">
       <a href="#problem">Problem</a>
       <a href="#solution">Solution</a>
+      <a href="#work-memory">Work Memory</a>
       <a href="#extension">Qwen Code Extension</a>
       <a href="https://github.com/edwardyoon/FocusMemory" class="nav-cta">GitHub ↗</a>
     </div>
@@ -197,7 +198,7 @@
   <div class="wrap reveal">
     <div class="badge"><span class="badge-dot"></span>Open-source · Self-hosted</div>
     <h1 class="title">Memory for your AI agents.</h1>
-    <p class="subtitle">The bottleneck isn't model intelligence anymore. It's the information architecture in front of it.</p>
+    <p class="subtitle">Source code, work history, and upcoming tasks — managed as one shared memory. No more cold boots, no more re-derivation.</p>
 
     <div class="hero-actions">
       <a href="https://github.com/edwardyoon/FocusMemory" class="btn-primary">Get Started →</a>
@@ -425,6 +426,46 @@
   </div>
 </section>
 
+<section id="work-memory">
+  <div class="wrap reveal">
+    <span class="section-label">Work Memory</span>
+    <div class="section-head">
+      <h2>Not a disconnected session. A shared world.</h2>
+    </div>
+    <p class="section-quote">
+      Each work session is not a blank slate. FocusMemory manages source code, work history, and upcoming tasks as a single shared memory — eliminating grep/glob, excessive re-derivation, and cold boot.
+    </p>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon">⌨</div>
+        <h3>Source code structure</h3>
+        <p>Function graph via tree-sitter AST + semantic search over code chunks. The agent recalls "who calls X" without re-reading the file tree.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">↺</div>
+        <h3>Work history</h3>
+        <p>Decisions, bug fixes, and session outcomes persist as causal chains. Next session starts where the last left off — not from zero.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">☰</div>
+        <h3>Task memory</h3>
+        <p>Daily TODO files with progress tracking. The agent reads the plan, executes sequentially, and updates its own progress markers.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:48px;padding:32px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+      <span class="section-label" style="display:block;margin-bottom:12px">Autonomous execution</span>
+      <p style="color:var(--text-2);font-size:.92rem;line-height:1.7;margin-bottom:16px;max-width:640px">
+        <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--accent)">todoRunner.js</code> (PM2-managed) schedules daily execution at 23:40. It reads <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem">todos/{date}.md</code>, spawns the agent with operational instructions, and triggers index refresh on completion.
+      </p>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--text-3);line-height:1.8">
+        [ ] → [~] in progress → [x] done &nbsp;|&nbsp; [!] interrupted (resumable)
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="extension">
   <div class="wrap reveal">
     <div style="display:flex;align-items:center;gap:40px;flex-wrap:wrap">
@@ -471,7 +512,7 @@
 
 <footer>
   <div class="wrap">
-    <span>FocusMemory — living knowledge base for AI coding agents · MIT License</span>
+    <span>FocusMemory — memory-based agent workflow management · MIT License</span>
   </div>
 </footer>
 
@@ -492,7 +533,7 @@
   "@type": "SoftwareApplication",
   "name": "FocusMemory",
   "url": "https://focusmemory.org",
-  "description": "Turn your workspace into a living knowledge base for AI coding agents. FocusMemory pre-indexes business decisions, project documentation, code structure, and semantic history — then exposes them through intelligent, scoring-based routing via a single MCP server. Think of it as an onboarding process your agent never forgets: new sessions start with full context about past decisions, architectural rationale, and how the system evolved — without burning tokens on repetitive file discovery.",
+  "description": "Memory-based agent workflow management. FocusMemory pre-indexes source code structure, work history, and task memory into a single shared context, exposing them through intelligent scoring-based routing via a single MCP server. Eliminates grep/glob, excessive re-derivation, and cold boot — giving the agent the same world understanding as the user.",
   "applicationCategory": "DeveloperApplication",
   "operatingSystem": "macOS, Linux",
   "programmingLanguage": ["JavaScript", "TypeScript"],
@@ -504,14 +545,15 @@
   "license": "https://opensource.org/licenses/MIT",
   "softwareVersion": "1.0.0",
   "featureList": [
+    "Memory-based agent workflow management — source code, work history, and task memory as a single shared context",
+    "Autonomous TODO execution — PM2-managed daily runner with progress tracking and auto-ingest",
     "Causal decision chains — trace the full history of architectural choices, from original rationale through every replacement",
     "Work history and session memory — decisions, bug fixes, and resolved issues persist across agent sessions",
-    "Project knowledge base — docs and plans chunked, embedded, and searchable via vector similarity",
     "Semantic code search — natural-language queries against JS/TS/PHP function bodies using BGE-M3 embeddings",
     "Code dependency graph — tree-sitter AST parsing for 'who calls X?' questions",
     "Scoring-based query routing — automatic dispatch to the right backend (vector, keyword, or decision chain)",
     "Prune and summarize — lightweight local LLM compresses raw search results into core facts before agent injection",
-    "Auto-supersede detection — new decisions that replace old ones are linked automatically with embedding similarity"
+    "Hard Gate enforcement — PreToolUse hook physically blocks grep/glob until search_memory runs first"
   ],
   "screenshot": "https://cdn.udanax.org/logos/focus-memory-qwen-extension.png",
   "author": {
@@ -538,7 +580,7 @@
   "@type": "WebSite",
   "name": "FocusMemory",
   "url": "https://focusmemory.org",
-  "description": "Living knowledge base for AI coding agents — minimize token waste in source exploration with pre-indexed recall and scoring-based routing."
+  "description": "Memory-based agent workflow management — source code, work history, and task memory as a single shared context."
 }
 </script>
 

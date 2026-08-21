@@ -2,24 +2,41 @@
 
 # FocusMemory
 
-> **Grep finds code. Vectors find meaning. I remember why.**
+> **Grep finds code. Vectors find meaning. I remember why — and what to do next.**
 
-**Memory infrastructure for agentic coding.**
+**Memory-based agent workflow management.**
 
 </div>
 
 ```
-       /\_/\   
+       /\_/\
       ( o.o )   "Grep finds code.
        > ^ <     Vectors find meaning.
-      /     \    I remember why."
-     | |   | |
+      /     \    I remember why —
+     | |   | |   and what to do next."
      (_)_)(_)=[]=============>  (FocusMemory Katana)
 ```
 
 Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
 
 FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing.
+
+### Three pillars
+
+| Pillar | What it manages | Backend |
+|--------|----------------|---------|
+| **Source code structure & semantic search** | Function graph, code chunks, natural-language code queries | Qdrant `code_chunks` + tree-sitter AST graph |
+| **Work history memory** | Decisions, bug fixes, session outcomes, causal chains | Qdrant `work_memory` + `decision_chains` |
+| **Task memory** | TODO items, daily execution plans, progress tracking | `todos/` folder + Meilisearch full-text |
+
+### The killer feature
+
+Each work session is not a disconnected context. FocusMemory manages source code, work execution history, and upcoming tasks **as a single shared memory**, giving the agent the same world understanding as the user.
+
+This eliminates the three biggest token sinks:
+- **grep/glob** — the agent recalls pre-indexed structure instead of re-discovering files
+- **Excessive thinking** — architectural rationale and prior decisions are recalled, not re-derived
+- **Cold boot** — new sessions start with full context, not an empty context window
 
 Think of it as an **onboarding process your agent never forgets**: new sessions start with full context about past decisions, architectural rationale, code dependencies, and how the system evolved — without burning tokens on repetitive file discovery.
 
@@ -79,8 +96,8 @@ FocusMemory now enforces write-back symmetry with read-side enforcement. The `St
 | Signal | Source | Example |
 |---|---|---|
 | Code change detected | Tool log (`edit`, `write_file`) | Any file modification in the turn |
-| Completion signal | `last_assistant_message` patterns | "테스트 통과", "버그 수정됨", "ready to commit" |
-| User confirmation | `decision: ask` → user responds | "예" → `remember_decision` called; "아니오" → skipped, no re-ask on same work unit |
+| Completion signal | `last_assistant_message` patterns | "tests passed", "bug fixed", "ready to commit" |
+| User confirmation | `decision: ask` → user responds | "Yes" → `remember_decision` called; "No" → skipped, no re-ask on same work unit |
 
 The write-back gate is conservative by design — both a code change AND a completion signal must be present. The user has final say via the `ask` decision, eliminating false positives that plague fully automated approaches. Once recorded (or explicitly declined), the flag persists across turns until new code edits start a fresh work unit.
 
@@ -98,6 +115,67 @@ The write-back gate is conservative by design — both a code change AND a compl
 | **Semantic code search** | Natural-language queries against JS/TS/Python/PHP function bodies using BGE-M3 embeddings |
 | **Code graph** | tree-sitter AST parsing → function nodes + call edges for "who calls X?" questions |
 | **Smart routing** | Scoring-based query router dispatches to the right backend (vector vs keyword vs decision chain) automatically |
+
+<br>
+
+---
+
+## Autonomous Todo Execution
+
+FocusMemory's `todoRunner.js` turns the **task memory** pillar into an autonomous execution loop. A PM2-managed process schedules daily TODO execution, reads the day's task file, and spawns the agent with full memory context.
+
+### How it works
+
+```
+23:40 daily (PM2 timer)
+  │
+  ▼
+todoRunner.js checks todos/{YYYY-MM-DD}.md
+  │ (no file or no [ ] / [~] items → exit)
+  ▼
+Spawns: qwen -p "{DEFAULT_INSTRUCTIONS} + Read today's TODO file... execute items in order" -y
+  │
+  ▼
+Agent reads the file, processes items sequentially, updates checkboxes:
+  [ ] → [~] (in progress) → [x] (done) or [!] (interrupted)
+  │
+  ▼
+On completion: triggers autoIngest.js → FocusMemory index updated
+```
+
+### Folder structure
+
+```
+todos/
+├── 2026-08-22.md    # Today's execution plan (agent reads/writes checkboxes)
+├── 2026-08-21.md    # Yesterday (completed, indexed by FocusMemory)
+└── done/            # Archived completed tasks
+```
+
+- **`todos/`** — daily execution files (short-lived, agent's working surface)
+- **`plans/`** — design docs, long-lived reference (architectural decisions, specs)
+- **`docs/`** — schemas, API specs, impact analyses
+
+### Default instructions
+
+The runner injects a fixed set of operational instructions into every execution prompt:
+
+- No commit, push, or deploy — changes reviewed by the user next morning
+- Sequential processing (one item at a time, no parallel sub-agents)
+- Progress tracking via checkbox state (`[ ]` → `[~]` → `[x]` / `[!]`)
+- Verification in local environment only (production is read-only)
+
+### Running
+
+```bash
+# PM2-managed (auto-schedules at 23:40)
+pm2 start FocusMemory/todoRunner.js --name todo-runner
+
+# Manual trigger (run now, then continue scheduling)
+node FocusMemory/todoRunner.js --now
+```
+
+Logs: `logs/todo-{YYYY-MM-DD}.log`
 
 <br>
 
@@ -273,7 +351,7 @@ User prompt submitted
 [Stop hook — turn end] check-writeback.js fires once per turn
   → Reads tool log: code change? Reads message: completion signal?
   → Both yes + !decisionRecorded + !decisionDeclined → ask user
-  → "예" → remember_decision called; "아니오" → decisionDeclined set, no re-ask on same work unit
+  → "Yes" → remember_decision called; "No" → decisionDeclined set, no re-ask on same work unit
 ```
 
 ### Hard Gate enforcement levels
@@ -287,7 +365,7 @@ User prompt submitted
 
 The PreToolUse hook enforces the read-side Hard Gate at the system level. When an agent attempts to call `grep_search` or `glob` without calling `search_memory` first, the hook returns a deny decision with the reason message: `[Hard Gate] Call mcp__focus-memory__search_memory before using grep_search/glob.`
 
-The Stop hook enforces write-back symmetry at the turn boundary. It fires once per turn after the model finishes its response, checking for both code changes (`edit`/`write_file` in tool log) and completion signals (patterns like "테스트 통과", "버그 수정됨" in `last_assistant_message`). When both are present and no decision has been recorded yet, it asks the user via `decision: ask` — giving final control to the human while preventing forgotten write-backs.
+The Stop hook enforces write-back symmetry at the turn boundary. It fires once per turn after the model finishes its response, checking for both code changes (`edit`/`write_file` in tool log) and completion signals (patterns like "tests passed", "bug fixed" in `last_assistant_message`). When both are present and no decision has been recorded yet, it asks the user via `decision: ask` — giving final control to the human while preventing forgotten write-backs.
 
 ### Installation
 
@@ -489,7 +567,8 @@ FocusMemory/
 ├── .env.example            # Environment config template
 ├── index.js                # MCP stdio + Hono HTTP — 8 tools, /v1/context/search endpoint
 ├── init.js                 # Workspace initializer (creates docs/, plans/, .focusmemoryignore)
-├── autoIngest.js           # Incremental doc/plan ingest + code chunk reindex (cron-safe)
+├── autoIngest.js           # Incremental doc/plan/todo ingest + code chunk reindex (cron-safe)
+├── todoRunner.js           # Autonomous TODO execution runner (PM2-managed, daily at 23:40)
 ├── meilisearch.js          # MeiliSearch indexer for docs/plans Markdown files
 ├── lib/                    # Shared libraries
 │   ├── utils.js            # scanFiles, loadIgnorePatterns, extractQueryFeatures, routeQuery, pruneAndSummarize

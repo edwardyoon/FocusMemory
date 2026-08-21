@@ -8,6 +8,7 @@ import { Meilisearch } from "meilisearch";
 const STATE_FILE = path.join(process.cwd(), "ingest_state.json");
 const DOCS_DIR = process.env.DOCS_DIR || path.join(process.cwd(), "..", "docs");
 const PLANS_DIR_ROOT = process.env.PLANS_DIR || path.join(process.cwd(), "..", "plans");
+const TODOS_DIR = process.env.TODOS_DIR || path.join(process.cwd(), "..", "todos");
 const ROOT = path.resolve(DOCS_DIR, ".."); // project root
 
 // ─── Meilisearch client ────────────────────────────────────────────
@@ -43,8 +44,9 @@ async function saveState(state) {
 }
 
 function getFileKey(filePath, type) {
-  // Normalized key: relative path from root (docs/ or plans/)
-  return `${type}:${path.relative(type === "docs" ? DOCS_DIR : PLANS_DIR_ROOT, filePath)}`;
+  // Normalized key: relative path from root (docs/ or plans/ or todos/)
+  const baseDir = type === "docs" ? DOCS_DIR : type === "todos" ? TODOS_DIR : PLANS_DIR_ROOT;
+  return `${type}:${path.relative(baseDir, filePath)}`;
 }
 
 // ─── File scanning ────────────────────────────────────────────────
@@ -146,6 +148,18 @@ async function ingestPlanFile(filePath) {
   console.log(`[plans] Processing: ${fileName}`);
 
   const doc = await parseMdFile(filePath, "plans");
+  await upsertToMeili(doc);
+  console.log(`  → upserted to Meilisearch (uid: ${doc.uid})\n`);
+
+  return true;
+}
+
+async function ingestTodoFile(filePath) {
+  const fileName = path.basename(filePath);
+
+  console.log(`[todos] Processing: ${fileName}`);
+
+  const doc = await parseMdFile(filePath, "todos");
   await upsertToMeili(doc);
   console.log(`  → upserted to Meilisearch (uid: ${doc.uid})\n`);
 
@@ -286,6 +300,48 @@ async function main() {
     }
   }
 
+  // ── Scan todos/ ───────────────────────────────────────────────
+  if (!docsOnly) {
+    console.log("--- Scanning todos/ ---");
+    const todoFiles = await scanDir(TODOS_DIR);
+
+    for (const filePath of todoFiles) {
+      const fileKey = getFileKey(filePath, "todos");
+      currentFiles.add(fileKey);
+      const mtime = await getFileMtime(filePath);
+      const prev = state.files[fileKey];
+
+      if (!prev) {
+        console.log(`  [new] ${path.relative(TODOS_DIR, filePath)}`);
+        totalNew++;
+      } else if (forceAll || new Date(mtime) > new Date(prev.mtime)) {
+        console.log(`  [modified] ${path.relative(TODOS_DIR, filePath)} (mtime: ${mtime})`);
+        totalModified++;
+      } else {
+        continue; // unchanged
+      }
+
+      try {
+        const ok = await ingestTodoFile(filePath);
+        if (ok) {
+          state.files[fileKey] = { mtime, ingested_at: new Date().toISOString(), type: "todos" };
+          successCount++;
+        } else {
+          failCount++;
+        }
+      } catch (err) {
+        console.error(`  ✗ failed: ${path.relative(TODOS_DIR, filePath)} — ${err.message}\n`);
+        failCount++;
+      }
+    }
+
+    if (!todoFiles.length) {
+      console.log("  (no .md files found)\n");
+    } else {
+      console.log(`  Found ${todoFiles.length} todo files\n`);
+    }
+  }
+
   // ── Detect deleted files ──────────────────────────────────────
   const deletedKeys = [];
   for (const key of Object.keys(state.files)) {
@@ -297,7 +353,8 @@ async function main() {
     console.log(`--- Removed ${deletedKeys.length} deleted file entries ---`);
     for (const key of deletedKeys) {
       const [type, relPath] = key.split(":");
-      const uid = computeUid(path.join(type === "docs" ? DOCS_DIR : PLANS_DIR_ROOT, relPath), type);
+      const baseDir = type === "docs" ? DOCS_DIR : type === "todos" ? TODOS_DIR : PLANS_DIR_ROOT;
+      const uid = computeUid(path.join(baseDir, relPath), type);
       console.log(`  [removed] ${key}`);
       try {
         await deleteFromMeili(uid);
