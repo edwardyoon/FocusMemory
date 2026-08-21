@@ -1873,6 +1873,45 @@ try {
       return cD.json({ error: err.message }, 500);
     }
   });
+  dashApp.get("/api/todos/toc", (cD) => {
+    try {
+      const todosDir = process.env.TODOS_DIR;
+      if (!todosDir) return cD.json({ days: [] });
+
+      const fsMod = fsSync.default;
+      const today = new Date();
+      const fmt = (d) =>
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const todayStr = fmt(today);
+      const yest = new Date(today);
+      yest.setDate(yest.getDate() - 1);
+      const yestStr = fmt(yest);
+
+      const days = [];
+      for (const dateStr of [yestStr, todayStr]) {
+        const filePath = `${todosDir}/${dateStr}.md`;
+        if (!fsMod.existsSync(filePath)) continue;
+        const content = fsMod.readFileSync(filePath, "utf-8");
+        const headers = [];
+        for (const line of content.split("\n")) {
+          const m = line.match(/^##\s+(\[([ x~!])\])\s*(.+)/);
+          if (m) {
+            headers.push({ status: m[2] || " ", title: m[3].trim() });
+          }
+        }
+        days.push({
+          date: dateStr,
+          label: dateStr === todayStr ? "Today" : "Yesterday",
+          total: headers.length,
+          done: headers.filter((h) => h.status === "x").length,
+          headers,
+        });
+      }
+      return cD.json({ days: days.reverse() });
+    } catch (err) {
+      return cD.json({ error: err.message, days: [] }, 500);
+    }
+  });
 
   const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort });
   console.error(`[FocusMemory] Dashboard UI listening on :${dashboardPort}`);

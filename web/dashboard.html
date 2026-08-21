@@ -276,6 +276,83 @@
     font-size: 14px;
   }
 
+  /* TODO TOC */
+  .todo-day {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin-bottom: 12px;
+  }
+
+  .todo-day-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+  }
+
+  .todo-day-label {
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .todo-day-progress {
+    font-size: 12px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .todo-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 6px 0;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .todo-item:last-child { border-bottom: none; }
+
+  .todo-check {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    flex-shrink: 0;
+  }
+
+  .todo-check.done {
+    background: rgba(74, 222, 128, 0.15);
+    border-color: var(--green);
+    color: var(--green);
+  }
+
+  .todo-check.progress {
+    background: rgba(255, 107, 37, 0.15);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  .todo-check.error {
+    background: rgba(248, 113, 113, 0.15);
+    border-color: var(--red);
+    color: var(--red);
+  }
+
+  .todo-title {
+    color: var(--text);
+  }
+
+  .todo-title.done {
+    color: var(--text-dim);
+    text-decoration: line-through;
+  }
+
   /* Responsive */
   @media (max-width: 640px) {
     .summary-bar { grid-template-columns: repeat(2, 1fr); }
@@ -299,6 +376,12 @@
   </header>
 
   <div id="errorBox" class="error-box" style="display:none"></div>
+
+  <!-- TODO TOC -->
+  <div class="section-title">Autonomous TODO</div>
+  <div id="todoToc" style="margin-bottom:48px">
+    <div class="loading"><div class="spinner"></div>Loading TODO...</div>
+  </div>
 
   <!-- Summary -->
   <div class="summary-bar" id="summaryBar">
@@ -405,6 +488,15 @@ async function fetchStats() {
     renderQdrant(data.qdrant || {});
     renderMeili(data.meilisearch || {});
     renderSystemInfo(data.system || {});
+
+    // TODO TOC
+    try {
+      const todoRes = await fetch(API_BASE + '/api/todos/toc');
+      if (todoRes.ok) {
+        const todoData = await todoRes.json();
+        renderTodoToc(todoData);
+      }
+    } catch {}
 
     // Gate telemetry
     try {
@@ -540,6 +632,32 @@ function renderGate(data) {
   document.getElementById('gateWriteAllow').textContent = formatNum(data.writeBackGate?.allow || 0);
   document.getElementById('gateWriteSkip').textContent = formatNum(data.writeBackGate?.skip || 0);
   document.getElementById('gateUserYes').textContent = formatNum(data.userResponses?.yes || 0);
+}
+
+function renderTodoToc(data) {
+  const el = document.getElementById('todoToc');
+  if (!data.days || data.days.length === 0) {
+    el.innerHTML = '<div class="todo-day" style="color:var(--text-dim);font-size:13px">No TODO files found</div>';
+    return;
+  }
+
+  const statusIcons = { 'x': '✓', '~': '~', '!': '!', ' ': '' };
+  const statusClasses = { 'x': 'done', '~': 'progress', '!': 'error', ' ': '' };
+
+  el.innerHTML = data.days.map(day => `
+    <div class="todo-day">
+      <div class="todo-day-header">
+        <span class="todo-day-label">${esc(day.label)} — ${esc(day.date)}</span>
+        <span class="todo-day-progress">${day.done}/${day.total} done</span>
+      </div>
+      ${day.headers.map(h => `
+        <div class="todo-item">
+          <span class="todo-check ${statusClasses[h.status]}">${statusIcons[h.status]}</span>
+          <span class="todo-title ${h.status === 'x' ? 'done' : ''}">${esc(h.title)}</span>
+        </div>
+      `).join('')}
+    </div>
+  `).join('');
 }
 
 function formatNum(n) {
