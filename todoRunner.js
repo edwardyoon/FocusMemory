@@ -53,16 +53,17 @@ function ensureLogDir() {
  * @param {string[]} args
  * @param {string} logPath
  * @param {string} [cwd]
+ * @param {object} [env]
  * @returns {Promise<number>} exit code
  */
-function runProcess(cmd, args, logPath, cwd) {
+function runProcess(cmd, args, logPath, cwd, env) {
   return new Promise((resolve) => {
     const logStream = fs.createWriteStream(logPath, { flags: "a" });
     logStream.write(`\n=== ${cmd} ${args.join(" ")} ===\n`);
 
     const child = spawn(cmd, args, {
       cwd: cwd || WORKSPACE,
-      env: process.env,
+      env: env || process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -114,8 +115,21 @@ Read today's TODO file: ${todoFile}
 Execute the pending items (marked [ ] or [~]) from top to bottom, one at a time.
 After each item, update its checkbox and record a 1-2 line summary in the file.`;
 
+  // Build env for qwen: ensure PATH and project dir are explicit
+  const qwenEnv = {
+    ...process.env,
+    PATH: `/opt/homebrew/bin:${path.join(process.env.HOME, ".local", "bin")}:${process.env.PATH || "/usr/bin:/bin"}`.split(":").filter(Boolean).join(":"),
+    QWEN_CODE_PROJECT_DIR: path.join(process.env.HOME, ".qwen", "projects", "-opt-homebrew-var-www"),
+  };
+
   log(`Spawning qwen execution...`);
-  const code = await runProcess(QWEN_BIN, ["-p", prompt, "-y"], logPath);
+  const code = await runProcess(
+    QWEN_BIN,
+    ["-p", prompt],
+    logPath,
+    WORKSPACE,
+    qwenEnv,
+  );
   log(`qwen exited with code ${code}`);
 
   // Trigger auto-ingest to update FocusMemory index
