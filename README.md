@@ -57,7 +57,7 @@ FocusMemory moves through the same loop on every query:
 | **Ingest** | Docs, plans, and code get chunked (LLM for docs, tree-sitter for JS), embedded with BGE-M3, and upserted to Qdrant. Incremental via mtime/SHA-256 state tracking (`autoIngest.js`, cron-safe). | ✅ implemented |
 | **Route** | Each query is decomposed into signals (causal, temporal, structural, identifier ratio). A scoring function ranks all backends; the winner executes alone, or a parallel search + rerank fires if top-two scores are within ε=0.15 (`utils.js` `routeQuery()`). | ✅ implemented |
 | **Recall** | The winning backend(s) run the search — vector cosine for work_memory/project_facts/decision_chains, keyword payload scroll for graph. Results are merged and reranked with recency decay (`index.js` `search_memory`). | ✅ implemented |
-| **Prune** | A local LLM (SUMMARY_LLM — Qwen 2.5 / Gemma) strips noise from raw top-N results before anything reaches the agent prompt. Compresses 10~15 raw hits into core facts. Graceful fallback to raw output if SUMMARY_LLM is unavailable (`utils.js` `pruneAndSummarize()`). | ✅ implemented |
+| **Prune** | A local LLM (SUMMARY_LLM — Bonsai 27B / Gemma 4 31B) strips noise from raw top-N results before anything reaches the agent prompt. Compresses 10~15 raw hits into core facts. Graceful fallback to raw output if SUMMARY_LLM is unavailable (`utils.js` `pruneAndSummarize()`). | ✅ implemented |
 | **Commit** | New decisions are written into both `work_memory` and `decision_chains` as linked nodes with `topic_key`, `reasoning`, and `file_paths`. Topic key is auto-inferred via embedding similarity against existing topics, with LLM classification fallback (`index.js` `remember_decision`). | ✅ implemented |
 | **Supersede** | When a new decision shares a topic_key with an active node, embedding similarity is computed automatically. Single candidate ≥ 0.8 or best-of-many ≥ 0.85 triggers auto-supersede — old node gets `status: "superseded"` and linked forward via `superseded_by`. Explicit `supersedes` param still supported for manual override (`index.js` `remember_decision`). | ✅ implemented |
 | **Trace** | Walk the causal chain in either direction — backward via `supersedes`, forward via `superseded_by` — returning full chronological history with reasoning. No LLM summarization; structure preserved as-is (`index.js` `trace_decision_chain`). | ✅ implemented |
@@ -552,7 +552,7 @@ Decisions are also dual-written to `work_memory` for backward compatibility, and
 
 ### Prune & Summarize (§2.5)
 
-Raw vector search returns top-N results, but 80% may be irrelevant noise. Before injecting context into the agent's prompt, a lightweight local LLM (SUMMARY_LLM — Qwen 2.5, Gemma, etc.) compresses the raw results into core facts that directly answer the query. If SUMMARY_LLM is unavailable, results are returned unpruned with zero downtime.
+Raw vector search returns top-N results, but 80% may be irrelevant noise. Before injecting context into the agent's prompt, a lightweight local LLM (SUMMARY_LLM — Bonsai 27B, Gemma 4 31B, etc.) compresses the raw results into core facts that directly answer the query. If SUMMARY_LLM is unavailable, results are returned unpruned with zero downtime.
 
 ### Semantic code search
 
