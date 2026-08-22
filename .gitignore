@@ -9,3 +9,4 @@ ingest_state.json
 logs/
 .qwen/
 gate-telemetry.jsonl
+graph_state.json
