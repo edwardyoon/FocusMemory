@@ -19,6 +19,8 @@ Optimized for Qwen Code
      (_)_)(_)=[]=============>  (FocusMemory Katana)
 ```
 
+![FocusMemory Katana](dia.png)
+
 Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
 
 FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing.
