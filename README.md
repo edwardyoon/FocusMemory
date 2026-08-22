@@ -6,6 +6,8 @@
 
 **Memory-based agent workflow management.**
 
+Optimized for Qwen Code
+
 </div>
 
 ```
