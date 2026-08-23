@@ -1,20 +1,15 @@
 #!/usr/bin/env node
-// PreToolUse hook — deny grep_search/glob if search_memory was not called this turn
+// PreToolUse hook — deny grep_search/glob unless memory was satisfied THIS turn.
+//
+// Satisfaction is epoch-scoped (see lib/state.js): reset-memory-flag.js
+// increments turnEpoch on every prompt and clears the stamp; the HTTP
+// auto-recall hook or an explicit search_memory stamps memoryCalledEpoch =
+// current turnEpoch. The gate passes only when the two match — so a stamp
+// from an earlier turn (e.g. after a failed recall on the new turn) can
+// never satisfy the gate.
+
 const fs = require('fs');
-const path = require('path');
-
-// State lives in ~/.qwen/tmp/tool-calls/ so it's per-user, not tied to where FocusMemory is cloned
-const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
-const TELEMETRY_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'focus-memory');
-fs.mkdirSync(STATE_DIR, { recursive: true });
-fs.mkdirSync(TELEMETRY_DIR, { recursive: true });
-
-function appendTelemetry(entry) {
-  const file = path.join(TELEMETRY_DIR, 'gate-telemetry.jsonl');
-  try {
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
-  } catch {}
-}
+const { loadState, stateFile, appendTelemetry } = require('./lib/state.js');
 
 function main() {
   const raw = fs.readFileSync(0, 'utf8');
@@ -26,14 +21,14 @@ function main() {
   const sessionId = event.session_id;
   if (!sessionId) returnAllow();
 
-  const stateFile = path.join(STATE_DIR, `${sessionId}.json`);
   const toolName = event.tool_name || '';
 
   // 1. Bypass Hard Gate when an explicit file path is present in the tool input
   try {
     const inputStr = JSON.stringify(event.tool_input || '');
-    // Absolute path pattern: /.../filename.ext
-    const explicitFile = /\/[A-Za-z0-9_\-\.\/]+\.[a-zA-Z0-9]{2,5}(?:\s|$)/.test(inputStr);
+    // Absolute path pattern: /.../filename.ext — \b after the extension so it
+    // also matches inside stringified JSON object input (e.g. {"path":"/a/b.js"})
+    const explicitFile = /\/[A-Za-z0-9_\-\.\/]+\.[a-zA-Z0-9]{2,5}\b/.test(inputStr);
     if ((toolName === 'grep_search' || toolName === 'glob') && explicitFile) {
       appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision: 'allow', memoryCalled: false, reason: 'explicit_file_path_bypass' });
       returnAllow();
@@ -41,20 +36,25 @@ function main() {
   } catch {}
 
   let decision = 'deny';
+  let reason = 'epoch_mismatch';
   try {
-    let state;
-    if (fs.existsSync(stateFile)) {
-      state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
-    } else {
-      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false, reason: 'no_state' });
+    if (!fs.existsSync(stateFile(sessionId))) {
+      reason = 'no_state';
+      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false, reason });
       returnDeny();
     }
-    if (state && state.memoryCalled) {
+    const state = loadState(sessionId);
+    const turnEpoch = Number.isFinite(state.turnEpoch) ? state.turnEpoch : null;
+    // Strict equality on both fields — a legacy state file without turnEpoch
+    // (turnEpoch null) never passes.
+    if (turnEpoch !== null && typeof state.memoryCalledEpoch === 'number' && state.memoryCalledEpoch === turnEpoch) {
       decision = 'allow';
-      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: true });
+      reason = state.satisfiedBy || 'memory_called';
+      appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: true, reason });
       returnAllow();
     }
-    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false });
+    if (turnEpoch === null) reason = 'legacy_state';
+    appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-memory-first', tool: toolName, decision, memoryCalled: false, reason });
     returnDeny();
   } catch {
     returnAllow();

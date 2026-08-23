@@ -13,7 +13,9 @@ import { serve } from "@hono/node-server";
 import fs from "fs/promises";
 import { createWriteStream } from "fs";
 import path from "path";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath } from "./lib/utils.js";
+import { randomUUID } from "node:crypto";
+import hookState from "./hooks/lib/state.js";
+import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7700";
@@ -285,6 +287,19 @@ server.registerTool(
   },
   async ({ query, limit }) => {
     log(`[MCP search_memory] source=mcp, query="${query.slice(0, 80)}", limit=${limit}`);
+
+    // Triviality gate — rule-based skip, zero backend cost (shared heuristic with the
+    // HTTP auto-recall hook). The Hard Gate is still satisfied: the PreToolUse hook
+    // recorded this call before the handler ran.
+    if (isTrivialQuery(query)) {
+      log(`[MCP search_memory] skip trivial query: "${query.slice(0, 40)}"`);
+      return {
+        content: [{
+          type: "text",
+          text: "Memory search skipped (trivial query — no backend lookup performed). Proceed directly with the file/code tools the task requires."
+        }]
+      };
+    }
 
     // Explicit file path detection — skip memory search for direct file I/O queries
     const explicitFile = /\/[A-Za-z0-9_\-\.\/]+\.[a-zA-Z0-9]{2,5}(?:\s|$)/.test(query);
@@ -814,7 +829,7 @@ server.registerTool(
       await qdrant.upsert("work_memory", {
         points: [
           {
-            id: crypto.randomUUID(),
+            id: randomUUID(),
             vector,
             payload: {
               type,
@@ -831,7 +846,7 @@ server.registerTool(
     }
 
     // Save to decision_chains (causal chain)
-    const decision_id = crypto.randomUUID();
+    const decision_id = randomUUID();
     const resolvedTopic = topic_key || (await inferTopicKey(summary_text));
     const chainContent = `${summary_text}${reasoning ? "\n" + reasoning : ""}`;
     const chainVector = await embed(chainContent);
@@ -1671,8 +1686,8 @@ httpApp.post("/v1/context/search", async (c) => {
     return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
   }
 
-  // Skip trivial queries — no point running full search + LLM summary for "hi" or "2+2"
-  if (query.length < 10 || /^[\d+\-*/().\s=]+$/.test(query) || /^(hi|hello|hey|yo|ok|thanks|done|yes|no)\s*[!.]?\s*$/i.test(query)) {
+  // Skip trivial queries — shared heuristic with the MCP search_memory entry gate
+  if (isTrivialQuery(query)) {
     log(`[Hook /v1/context/search] skip trivial query: "${query}"`);
     return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
   }
@@ -1720,6 +1735,27 @@ httpApp.post("/v1/context/search", async (c) => {
       additionalContext += `   ${formatResult(r, col)}\n`;
     }
   });
+
+  // Stamp the shared turn state so the Hard Gate (check-memory-first.js) knows
+  // memory was already consulted for THIS turn: it compares memoryCalledEpoch
+  // against turnEpoch (bumped by reset-memory-flag.js on every prompt), so a
+  // later turn whose recall fails can never ride on this turn's stamp. The
+  // lock-protected write (lib/state.js) serializes with the reset hook, which
+  // runs in parallel for the same prompt.
+  try {
+    const sessionId = body.session_id;
+    if (sessionId) {
+      hookState.updateState(sessionId, (s) => ({
+        ...s,
+        memoryCalled: true,
+        memoryCalledEpoch: Number.isFinite(s.turnEpoch) ? s.turnEpoch : 0,
+        satisfiedBy: "auto_recall",
+      }));
+      log(`[Hook /v1/context/search] turn state stamped (session=${sessionId})`);
+    }
+  } catch (err) {
+    log(`[Hook /v1/context/search] turn state stamp failed: ${err.message}`);
+  }
 
   return c.json({ hookEventName: "UserPromptSubmit", additionalContext });
 });

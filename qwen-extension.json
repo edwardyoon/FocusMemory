@@ -112,6 +112,19 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "description": "Cleanup — remove this session's per-session state files and sweep stale files (7 days) left by sessions that ended without a SessionEnd event",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}cleanup-session.js",
+            "name": "cleanup-session",
+            "timeout": 5000
+          }
+        ]
+      }
     ]
   }
 }

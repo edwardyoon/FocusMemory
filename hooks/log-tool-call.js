@@ -1,21 +1,12 @@
 #!/usr/bin/env node
-// PreToolUse hook — log tool calls and track state flags for Hard Gate enforcement
-// Handles: search_memory (memoryCalled), remember_decision (decisionRecorded), code changes
+// PreToolUse hook — log tool calls and track state flags for Hard Gate
+// enforcement. search_memory stamps the satisfaction epoch (memoryCalledEpoch
+// = current turnEpoch) so the gate can distinguish "searched THIS turn" from
+// a stale stamp of an earlier turn.
 
 const fs = require('fs');
 const path = require('path');
-
-const STATE_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'tool-calls');
-const TELEMETRY_DIR = path.join(process.env.HOME || process.env.USERPROFILE || '.', '.qwen', 'tmp', 'focus-memory');
-fs.mkdirSync(STATE_DIR, { recursive: true });
-fs.mkdirSync(TELEMETRY_DIR, { recursive: true });
-
-function appendTelemetry(entry) {
-  const file = path.join(TELEMETRY_DIR, 'gate-telemetry.jsonl');
-  try {
-    fs.appendFileSync(file, JSON.stringify(entry) + '\n');
-  } catch {}
-}
+const { updateState, appendTelemetry, rotateJsonl, STATE_DIR } = require('./lib/state.js');
 
 function main() {
   const raw = fs.readFileSync(0, 'utf8');
@@ -28,47 +19,39 @@ function main() {
   if (!sessionId) returnAllow();
 
   const toolName = event.tool_name || 'unknown';
-  const stateFile = path.join(STATE_DIR, `${sessionId}.json`);
   const logFile = path.join(STATE_DIR, `${sessionId}.jsonl`);
 
-  // Read current state (or create empty)
-  let state = {};
-  try {
-    if (fs.existsSync(stateFile)) {
-      state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  // --- Flag updates in a single lock-protected write (see lib/state.js) ---
+  updateState(sessionId, (s) => {
+    const next = { ...s };
+    if (toolName === 'mcp__focus-memory__search_memory') {
+      next.memoryCalled = true;
+      next.memoryCalledEpoch = Number.isFinite(s.turnEpoch) ? s.turnEpoch : 0;
+      next.satisfiedBy = 'search_memory';
     }
-  } catch {}
+    if (toolName.includes('remember_decision')) {
+      next.decisionRecorded = true;
+      delete next.decisionDeclined;
+    }
+    if (['edit', 'write_file'].includes(toolName)) {
+      // New code edit means a new work unit started — clear old
+      // decline/record so the write-back ask can fire again later.
+      delete next.decisionDeclined;
+      delete next.decisionRecorded;
+    }
+    return next;
+  });
 
-  // --- Flag updates based on tool name ---
-
-  // search_memory called → mark as memory-called this turn
-  if (toolName === 'mcp__focus-memory__search_memory') {
-    state.memoryCalled = true;
-  }
-
-  // remember_decision called → mark decision recorded for session
   if (toolName.includes('remember_decision')) {
-    state.decisionRecorded = true;
-    // Clear decline flag since user chose to record
-    delete state.decisionDeclined;
     appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'check-writeback', event: 'user_response', decision: 'yes', tool: toolName });
   }
 
-  // Code change tools — track and reset decline flag on new work
-  if (['edit', 'write_file'].includes(toolName)) {
-    // New code edit means a new work unit started — clear old decline/record so we can ask again later
-    delete state.decisionDeclined;
-    delete state.decisionRecorded;
-  }
-
-  // Write updated state
-  try {
-    fs.writeFileSync(stateFile, JSON.stringify(state));
-  } catch {}
-
-  // Append to audit log (jsonl)
+  // Append to per-session audit log
   const line = JSON.stringify({ tool: toolName, ts: Date.now() }) + '\n';
-  try { fs.appendFileSync(logFile, line); } catch {}
+  try {
+    fs.appendFileSync(logFile, line);
+    rotateJsonl(logFile);
+  } catch {}
 
   returnAllow();
 }

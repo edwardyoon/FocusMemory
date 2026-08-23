@@ -288,9 +288,9 @@ JSON stats are also available at `http://localhost:8891/api/stats` and `http://l
 FocusMemory ships a ready-to-install extension for **[qwen-code](https://github.com/QwenLM/qwen-code)** — zero upstream modifications required. The extension wires all MCP tools and hooks through a single `qwen-extension.json` manifest:
 
 ```
-User prompt → [HTTP Hook: auto-recall] + [Hard Gate: reset flag]
-  → context injected, grep/glob blocked
-  → Agent calls search_memory → Hard Gate opens (grep/glob allowed)
+User prompt → [HTTP Hook: auto-recall] + [Hard Gate: new turn epoch]
+  → context injected + turn state stamped (or grep/glob stay blocked)
+  → Agent calls search_memory → turn state stamped → Hard Gate opens
   → Code work → Write-back to Qdrant
 ```
 
@@ -303,12 +303,13 @@ qwen-code (upstream — zero modifications)
     │   ├── mcpServers.focus-memory  → MCP stdio (8 tools)
     │   └── hooks:
     │       ├── UserPromptSubmit (HTTP)  → auto-recall context from Qdrant
-    │       ├── UserPromptSubmit (cmd)   → reset Hard Gate flag each turn
-    │       ├── PreToolUse search_memory → set memoryCalled flag
+    │       ├── UserPromptSubmit (cmd)   → new turn epoch (bump turnEpoch, clear stamp)
+    │       ├── PreToolUse search_memory → stamp memoryCalledEpoch = turnEpoch
     │       ├── PreToolUse remember_decision → set decisionRecorded flag
     │       ├── PreToolUse edit/write_file → track code changes, clear decline flag
-    │       ├── PreToolUse grep_search/glob → deny if flag not set
-    │       └── Stop                     → check-writeback (completion + ask)
+    │       ├── PreToolUse grep_search/glob → deny unless stamped this turn
+    │       ├── Stop                     → check-writeback (completion + ask)
+    │       └── SessionEnd               → cleanup-session (per-session files + 7-day sweep)
     │
     └── AGENTS.md                    → Hard Gate search protocol
 
@@ -323,25 +324,26 @@ FocusMemory/                         ← Single process: MCP stdio + Hono HTTP
 User prompt submitted
   │
   ▼
-[Auto-recall] UserPromptSubmit HTTP Hook fires
+[Auto-recall] UserPromptSubmit HTTP Hook fires (parallel with reset — CAS makes order irrelevant)
   → POST http://localhost:3900/v1/context/search
   → FocusMemory searches Qdrant (work_memory + project_facts)
   → SUMMARY_LLM prunes & summarizes results (~400 tokens)
   → additionalContext injected into agent context
+  → turn state stamped: memoryCalledEpoch = turnEpoch (satisfiedBy: auto_recall)
   │
   ▼
 [Hard Gate] UserPromptSubmit command Hook fires
-  → reset-memory-flag.js sets memoryCalled = false
+  → reset-memory-flag.js bumps turnEpoch and clears the satisfaction stamp
   │
   ▼
 [Agent Loop] AGENTS.md Hard Gate rules active + PreToolUse enforcement
-  → grep_search/glob blocked until search_memory called (PreToolUse deny)
-  → "Hook already injected context? Skip redundant search"
+  → grep_search/glob blocked unless the turn state is stamped (PreToolUse deny)
+  → "Hook already injected context? Skip redundant search" (stamped by auto-recall)
   → Or "New sub-question → call search_memory via MCP tool"
   │
   ▼
 [search_memory called] PreToolUse hook fires
-  → log-tool-call.js sets memoryCalled = true (Hard Gate opens)
+  → log-tool-call.js stamps memoryCalledEpoch = turnEpoch (satisfiedBy: search_memory)
   │
   ▼
 [Code Work] grep / read / edit / test — normal qwen-code tools
@@ -428,80 +430,69 @@ CLI mode loads extensions automatically — this step is not required.
 
 ### Hard Gate hook scripts
 
-The PreToolUse and Stop hooks use four Node.js scripts in `hooks/`:
+The hooks use five Node.js scripts plus a shared state library in `hooks/`:
 
 | Script | Trigger | Action |
 |--------|---------|--------|
-| `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Set `memoryCalled = false`; preserve `decisionRecorded`/`decisionDeclined` across turns |
-| `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Track flags: `memoryCalled=true`, `decisionRecorded=true`, clear `decisionDeclined` on new code edits |
-| `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny if `memoryCalled` is false, otherwise allow; bypass when input contains an explicit file path |
+| `reset-memory-flag.js` | UserPromptSubmit (every new turn) | Bump `turnEpoch`, clear the satisfaction stamp; preserve `decisionRecorded`/`decisionDeclined` across turns |
+| `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Stamp `memoryCalledEpoch = turnEpoch` on `search_memory`; `decisionRecorded=true`; clear `decisionDeclined` on new code edits |
+| `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny unless `memoryCalledEpoch === turnEpoch` (memory satisfied **this** turn); bypass when input contains an explicit file path |
 | `check-writeback.js` | Stop (once per turn at end) | If code change + completion signal + !decisionRecorded → ask user; else allow |
+| `cleanup-session.js` | SessionEnd | Delete this session's state/audit files; sweep files older than 7 days (sessions that crashed without SessionEnd) |
+| `lib/state.js` | — (shared) | `updateState` (lock-protected state writes), atomic write, JSONL rotation, telemetry, stale sweep |
 
 Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`.
 
 **State file format** (`~/.qwen/tmp/tool-calls/<session_id>.json`):
 ```json
-{ "memoryCalled": false, "decisionRecorded": false, "decisionDeclined": false }
+{ "turnEpoch": 7, "memoryCalled": true, "memoryCalledEpoch": 7, "satisfiedBy": "auto_recall", "decisionRecorded": false }
 ```
 
-- `memoryCalled`: reset every turn (read-side gate)
+- `turnEpoch`: bumped by `reset-memory-flag.js` on every prompt — the turn counter
+- `memoryCalledEpoch`: the `turnEpoch` value at the moment memory was satisfied (auto-recall or `search_memory`); `null` until then. The gate passes only when `memoryCalledEpoch === turnEpoch`, so a stamp from an earlier turn can never satisfy the gate — e.g. if auto-recall fails on the new turn, the previous turn's stamp is stale and the gate stays closed
+- `satisfiedBy`: `auto_recall` | `search_memory` — who stamped, for telemetry
 - `decisionRecorded`: persists across turns until cleared by new code edits (write-back tracking)
 - `decisionDeclined`: set when user declines; cleared on next `edit`/`write_file` to allow re-asking for new work units
+
+**Concurrent writers, one state file.** `reset-memory-flag.js` (millisecond-scale) and the HTTP auto-recall hook (seconds later, for the *same* prompt) both write this file with no ordering guarantee (qwen-code runs UserPromptSubmit hooks in parallel). `updateState` in `lib/state.js` serializes the writers with an exclusive lockfile (O_EXCL, 2 s acquisition deadline; a lock left by a crashed holder is removed after 5 s; if the deadline is ever exceeded the write proceeds lock-free as a best effort so a hook never hangs the session). The commit itself is atomic (tmp + rename), so readers never observe a torn state file.
 
 **Companion logs:**
 - Audit log: `~/.qwen/tmp/tool-calls/<session_id>.jsonl` — one line per tracked tool call (`{ tool, ts }`), written by `log-tool-call.js`
 - Gate telemetry: `~/.qwen/tmp/focus-memory/gate-telemetry.jsonl` — one line per gate decision (`{ ts, session_id, hook, tool, decision, memoryCalled, reason? }`). First place to look when a `grep_search`/`glob` call was unexpectedly blocked or bypassed:
 
 ```json
-{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":true}
+{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":true,"reason":"auto_recall"}
+{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":true,"reason":"search_memory"}
 {"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"allow","memoryCalled":false,"reason":"explicit_file_path_bypass"}
+{"ts":1786852894023,"session_id":"e70bab...","hook":"check-memory-first","tool":"grep_search","decision":"deny","memoryCalled":false,"reason":"epoch_mismatch"}
 ```
 
+Both JSONL logs are size-bounded: once a file exceeds 512 KB it is truncated to its last 1000 lines, on the next append.
+
 **Edge cases:**
-- **Explicit file path bypass** — `check-memory-first.js` allows `grep_search`/`glob` even with `memoryCalled = false` when the tool input contains an explicit file path (e.g. "read `/opt/project/src/foo.js`"); logged as `reason: explicit_file_path_bypass`
-- **No state file** — deny (`reason: no_state`); normally `reset-memory-flag.js` creates the file at turn start
+- **Triviality gate (both entry points)** — `isTrivialQuery()` in `lib/utils.js` (shared by the MCP `search_memory` tool and the HTTP auto-recall hook) skips backend lookups for queries under 10 chars, pure math strings, or greetings. Rule-based, no LLM. The gate is still satisfied: the tool call / hook ran, it just paid no backend cost
+- **Explicit file path bypass** — `check-memory-first.js` allows `grep_search`/`glob` even when the turn state is not stamped, if the tool input contains an explicit file path (e.g. "read `/opt/project/src/foo.js`"); logged as `reason: explicit_file_path_bypass`
+- **Auto-recall stamp** — a successful auto-recall stamps the turn state, allowing `grep_search`/`glob` without a manual `search_memory` call; allow logged with `reason: auto_recall` (the `satisfiedBy` value)
+- **Stale stamp (failed recall on the new turn)** — if the HTTP hook fails on a turn (server down, network error), it stamps nothing; the previous turn's stamp has the old epoch, so the gate denies with `reason: epoch_mismatch` until an explicit `search_memory` runs. A stale stamp can never open the gate
+- **No state file / legacy state** — no file → deny (`reason: no_state`); a state file from before the epoch design (no `turnEpoch`) → deny (`reason: legacy_state`) until the next `search_memory`
 - **Fail-open on error** — malformed stdin, missing `session_id`, or an internal exception makes the hook allow the call. A command hook that crashes with exit code 1 (e.g. `Cannot find module` from a dangling symlink) is non-blocking per qwen-code's hook contract, so a broken hook registration silently disables the gate instead of bricking the agent
 
 **Output formats:**
 - PreToolUse: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`
 - Stop: `{ decision: "allow" }` or `{ decision: "ask", reason: "...", stopReason: "..." }`
 
-### Hook registration: extension manifest vs user settings
+### Hook registration: single source — extension manifest only
 
-The same scripts can be registered in two places — this deployment uses both:
+Hooks are registered in **exactly one place**: the extension manifest (`qwen-extension.json` → `hooks`).
 
-| Registration | Config | Path style | Scope |
-|---|---|---|---|
-| Extension manifest (primary) | `qwen-extension.json` → `hooks` | `${extensionPath}/hooks/*.js` | Every session where the extension is enabled |
-| User settings (legacy) | `~/.qwen/settings.json` → `hooks` | Absolute paths via a `<project>/.qwen/hooks` symlink | Every project for the user |
+The same scripts *can* also be registered in `~/.qwen/settings.json` (historically via a `<project>/.qwen/hooks` symlink), but registering in both places makes every command hook fire **twice per event** — doubled telemetry lines per gate decision and, for any hook that triggers embedding/LLM work, doubled cost. The settings-registered copy was removed from `~/.qwen/settings.json` on 2026-08-23 (backup: `~/.qwen/settings.json.bak-20260823-hooks-dedup`); the MCP server entry in settings.json is kept as-is because the manifest's `${extensionPath}` registration and it resolve to the same single `index.js` process.
 
-The user-settings registration routes through a **directory symlink** so the scripts stay in one place:
+If you ever re-add hooks to `~/.qwen/settings.json`, remove them from the manifest instead — keep one execution path.
 
-```bash
-ln -s /path/to/FocusMemory/hooks /path/to/project/.qwen/hooks
-```
-
-```json
-// ~/.qwen/settings.json (abridged)
-"hooks": {
-  "UserPromptSubmit": [
-    { "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/reset-memory-flag.js" }] }
-  ],
-  "PreToolUse": [
-    { "matcher": "^mcp__focus-memory__search_memory$",
-      "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/log-tool-call.js" }] },
-    { "matcher": "^(grep_search|glob)$",
-      "hooks": [{ "type": "command", "command": "node /path/to/project/.qwen/hooks/check-memory-first.js" }] }
-  ]
-}
-```
-
-For the three hooks registered in both places (`reset-memory-flag`, `search_memory` logging, `grep_search`/`glob` check), each fires twice per event — visible in the gate telemetry as two identical lines per gate decision. The scripts are idempotent (same state file, same flags), so behavior is unaffected. To keep a single execution path, delete the `hooks` block from `~/.qwen/settings.json` and rely on the extension manifest alone.
-
-> **Dangling symlink = silent gate loss.** If the repo moves and the symlink target is gone, every settings-registered hook exits 1 (`Cannot find module`) and — being non-blocking — the Hard Gate stops denying with no visible error. Verify after any repo restructure:
+> **Dangling symlink = silent gate loss.** The extension is linked as `~/.qwen/extensions/focus-memory` → repo. If the repo moves and the link target is gone, every manifest hook exits 1 (`Cannot find module`) and — being non-blocking — the Hard Gate stops denying with no visible error. Verify after any repo restructure:
 >
 > ```bash
-> ls -laL /path/to/project/.qwen/hooks/   # must list the .js files, not "No such file or directory"
+> ls -laL ~/.qwen/extensions/focus-memory/hooks/   # must list the .js files, not "No such file or directory"
 > ```
 
 ### Design principles

@@ -112,6 +112,7 @@ Question received
 |------|-----------|--------|
 | `grep_search`/`glob` blocked until `search_memory` called | PreToolUse hook (deny) | You physically cannot grep before memory search |
 | Bypass: explicit file path in query | PreToolUse hook (allow) | `grep_search(pattern, path="/specific/file.js")` is allowed without memory |
+| Satisfied: turn state stamped this turn | PreToolUse hook (allow) | Auto-recall or `search_memory` stamped `memoryCalledEpoch == turnEpoch` in the shared state file — a stale stamp from an earlier turn (e.g. after a failed recall) never opens the gate |
 | `## Search Results (Auto-injected)` header present | UserPromptSubmit HTTP hook | Memory search is already satisfied — do NOT re-call `search_memory` with same keywords |
 | Completion signal + code change → ask to record | Stop hook (ask) | You'll be asked to call `remember_decision` at task completion |
 
