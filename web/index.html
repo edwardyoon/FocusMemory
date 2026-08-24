@@ -123,6 +123,13 @@
   .schematic .sub{font-size:8.5px;fill:var(--text-2);font-family:'JetBrains Mono',monospace}
   .schematic .tick-label{font-size:9px;fill:var(--text-3);font-family:'JetBrains Mono',monospace;text-transform:uppercase;letter-spacing:.08em}
   .schematic .arrow-line{stroke:var(--border-hi);stroke-width:1.2;fill:none;marker-end:url(#ahdr)}
+  .schematic .band-bg{fill:#0d0d10;stroke:var(--border-hi);stroke-width:1}
+  .schematic .band-title{font-size:9px;fill:var(--text-3);font-family:'JetBrains Mono',monospace;letter-spacing:.14em}
+  .schematic .band-tag{font-size:9px;fill:var(--text-3);font-family:'JetBrains Mono',monospace;letter-spacing:.08em}
+  .schematic .band-lbl{font-size:12px;font-weight:600;fill:var(--text)}
+  .schematic .band-lbl-orange{font-size:12px;font-weight:600;fill:var(--accent)}
+  .schematic .band-sub{font-size:9.5px;fill:var(--text-2)}
+  .schematic .band-note{font-size:9px;fill:var(--text-3);font-family:'JetBrains Mono',monospace}
 
   /* ---------- section ---------- */
   section{padding:100px 0}
@@ -206,8 +213,8 @@
     </div>
 
 <div class="diagram-card reveal visible">
-  <div class="diagram-label">Memory Architecture & Retrieval Pipeline</div>
-  <svg class="schematic" viewBox="0 0 1000 360" role="img" aria-label="Architecture diagram: Agent Query → Route → Retrieve → Prune → Inject → Agent/Model">
+  <div class="diagram-label">Memory Architecture — Retrieval Pipeline &amp; Autonomous TODO Loop</div>
+  <svg class="schematic" viewBox="0 0 1000 546" role="img" aria-label="Architecture diagram: Agent Query → Route → Retrieve → Prune → Inject → Agent/Model, plus autonomous TODO loop (PM2 scheduler → TODO file → spawn agent → execute → auto-ingest)">
     <defs>
       <marker id="ahdr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
         <path d="M0,0 L8,3 L0,6 Z" fill="#71717a" />
@@ -334,6 +341,56 @@
     <rect x="660" y="300" width="130" height="20" rx="4" fill="#09090b" stroke="#27272a" />
     <text class="lbl" x="725" y="314" text-anchor="middle" font-size="10">WRITE BACK</text>
     <text class="sub" x="725" y="335" text-anchor="middle" font-size="10">Outcomes, decisions, new facts</text>
+
+    <!-- ── autonomous TODO pipeline ─────────────────────────── -->
+    <rect class="band-bg" x="20" y="368" width="960" height="158" rx="12" />
+    <text class="band-title" x="44" y="392">AUTONOMOUS TODO PIPELINE</text>
+    <text class="band-tag" x="956" y="392" text-anchor="end">PM2 · DAILY 23:40</text>
+
+    <rect class="node-bg" x="35" y="406" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="120" y="430" text-anchor="middle">SCHEDULER</text>
+    <text class="band-sub" x="120" y="448" text-anchor="middle">todoRunner.js</text>
+    <text class="band-sub" x="120" y="463" text-anchor="middle">no commit · push · deploy</text>
+
+    <line class="arrow-line" x1="206" y1="442" x2="223" y2="442" />
+
+    <rect class="node-bg" x="225" y="406" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="310" y="430" text-anchor="middle">TODO FILE</text>
+    <text class="band-sub" x="310" y="448" text-anchor="middle">todos/{date}.md</text>
+    <text class="band-sub" x="310" y="463" text-anchor="middle">skips if none pending</text>
+
+    <line class="arrow-line" x1="396" y1="442" x2="413" y2="442" />
+
+    <rect class="node-bg" x="415" y="406" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="500" y="430" text-anchor="middle">SPAWN AGENT</text>
+    <text class="band-sub" x="500" y="448" text-anchor="middle">qwen -p</text>
+    <text class="band-sub" x="500" y="463" text-anchor="middle">default instructions</text>
+
+    <line class="arrow-line" x1="586" y1="442" x2="603" y2="442" />
+
+    <rect class="node-bg" x="605" y="406" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="690" y="430" text-anchor="middle">EXECUTE</text>
+    <text class="band-sub" x="690" y="448" text-anchor="middle">1 item at a time</text>
+    <text class="band-sub" x="690" y="463" text-anchor="middle">[ ] → [~] → [x] + summary</text>
+
+    <line class="arrow-line" x1="776" y1="442" x2="793" y2="442" />
+
+    <rect class="node-accent" x="795" y="406" width="170" height="72" rx="8" />
+    <text class="band-lbl-orange" x="880" y="430" text-anchor="middle">AUTO-INGEST</text>
+    <text class="band-sub" x="880" y="448" text-anchor="middle">autoIngest.js</text>
+    <text class="band-sub" x="880" y="463" text-anchor="middle">refresh memory indexes</text>
+
+    <!-- spawned agent reuses the retrieval pipeline -->
+    <path class="arrow-back" d="M 465,406 L 465,288" />
+    <text class="band-note" x="475" y="350">same retrieval pipeline</text>
+
+    <!-- auto-ingest merges into the write-back bus -->
+    <path class="arrow-back" d="M 880,406 L 880,310" />
+    <circle cx="880" cy="310" r="3" fill="#c8a46e" />
+
+    <!-- daily loop back to the scheduler -->
+    <path class="arrow-back" d="M 880,478 L 880,502 L 120,502 L 120,478" />
+    <text class="band-note" x="500" y="516" text-anchor="middle">DAILY LOOP · RESUMES 23:40</text>
   </svg>
 
   <div style="margin-top:36px;padding-top:28px;border-top:1px solid var(--border)">
