@@ -126,7 +126,21 @@ The write-back gate is conservative by design — both a code change AND a compl
 
 ## Autonomous Todo Execution
 
-FocusMemory's `todoRunner.js` turns the **task memory** pillar into an autonomous execution loop. A PM2-managed process schedules daily TODO execution, reads the day's task file, and spawns the agent with full memory context.
+FocusMemory's `todoRunner.js` turns the **task memory** pillar into an autonomous execution loop. You register tasks first (below); a PM2-managed process then schedules daily execution, reads the day's task file, and spawns the agent with full memory context.
+
+### Registering tasks
+
+Tasks enter through the **task registration receiver** (`taskReceiver.cjs`) — a standalone Express server on port 8888, run as `pm2 task-receiver`. Send free-form task text; it is formatted into a `## [ ]` item in the day's todos file, which the daily runner (below) then executes.
+
+```bash
+# Register a task (fire-and-forget — returns immediately; formatting runs in the background)
+curl -X POST http://127.0.0.1:8888/receive \
+  -H 'Content-Type: application/json' \
+  -d '{"task":"add a weekly digest email feature to the user panel"}'
+# -> { "success": true, "data": { "date": "2026-08-24", "file": "2026-08-24.md", "queued": true } }
+```
+
+Before formatting, the receiver searches FocusMemory for related business context (hard gate), so the generated item is grounded in prior decisions and docs. The full API (`/receive`, `/toc`, `/ping`) is documented in the `taskReceiver.cjs` header.
 
 ### How it works
 
