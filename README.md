@@ -23,22 +23,24 @@ Grep finds the code. Vectors find the meaning. Neither remembers the decision th
 
 FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing. Beyond retrieval, it manages **context state across compaction** in the form of [SKILL.state](#skillstate--structured-execution-state-across-compaction): the session's structured execution state (Σ) is extracted before compaction and re-injected after, so the agent resumes from explicit state, not a lossy summary.
 
-### Three pillars
+### Four pillars
 
 | Pillar | What it manages | Backend |
 |--------|----------------|---------|
 | **Source code structure & semantic search** | Function graph, code chunks, natural-language code queries | Qdrant `code_chunks` + tree-sitter AST graph |
 | **Work history memory** | Decisions, bug fixes, session outcomes, causal chains | Qdrant `work_memory` + `decision_chains` |
 | **Task memory** | TODO items, daily execution plans, progress tracking | `todos/` folder + Meilisearch full-text |
+| **Context state across compaction** | Structured execution state (Σ) — files touched, pending checks, decisions — extracted pre-compaction, re-injected post-compaction | SKILL.state (PreCompact/SessionStart hooks + extraction LLM) + `work_memory` checkpoints |
 
 ### The killer feature
 
-Each work session is not a disconnected context. FocusMemory manages source code, work execution history, and upcoming tasks **as a single shared memory**, giving the agent the same world understanding as the user.
+Each work session is not a disconnected context. FocusMemory manages source code, work execution history, upcoming tasks, **and the session's live execution state** as a single shared memory, giving the agent the same world understanding as the user.
 
-This eliminates the three biggest token sinks:
+This eliminates the biggest token sinks:
 - **grep/glob** — the agent recalls pre-indexed structure instead of re-discovering files
 - **Excessive thinking** — architectural rationale and prior decisions are recalled, not re-derived
 - **Cold boot** — new sessions start with full context, not an empty context window
+- **Compaction amnesia** — execution state (files touched, pending checks, decisions) is extracted to Σ and re-injected, so a compacted session resumes from explicit state, not a lossy summary
 
 Think of it as an **onboarding process your agent never forgets**: new sessions start with full context about past decisions, architectural rationale, code dependencies, and how the system evolved — without burning tokens on repetitive file discovery.
 
