@@ -302,10 +302,10 @@ ${transcriptText}
 }
 
 /**
- * Wrap a raw prompt in the Qwen3 chat template (im_start/im_end markers).
- * Both configured targets (123:8080 qwen27b via Ollama, 124:8081 qwen3-8b
- * via llama.cpp) are Qwen3 family and need the chat framing: a raw prompt on
- * /v1/completions makes qwen27b emit a single EOS token (verified 2026-08-31).
+ * Wrap a raw prompt in the Qwen3 chat template.
+ * Both configured targets (MAIN_LLM, SUMMARY_LLM) are Qwen3 family and need
+ * the chat framing: a raw prompt on /v1/completions makes Qwen3 emit a
+ * single EOS token.
  * @param {string} prompt
  * @returns {string}
  */
@@ -318,11 +318,11 @@ function wrapChatTemplate(prompt) {
 }
 
 /**
- * Call the extraction LLM (OpenAI-compatible /v1/completions, llama.cpp format).
- * Model cascade: MAIN_LLM (123:8080 qwen27b — GPU node, already used by
- * taskReceiver/nudge/ingest) first; the local Mac-mini SUMMARY_LLM is only a
+ * Call the extraction LLM (OpenAI-compatible /v1/completions).
+ * Model cascade: MAIN_LLM (shared server LLM, already used by
+ * taskReceiver/nudge/ingest) first; the local SUMMARY_LLM is only a
  * portability fallback for machines without MAIN_LLM (it is too slow for
- * this workload — see docs/impact-focusmemory-skillstate-hooks.md).
+ * this workload).
  * The prompt is wrapped in the Qwen3 chat template (see wrapChatTemplate):
  * raw prompts make the Qwen3 family emit a single EOS token.
  * @param {string} prompt
