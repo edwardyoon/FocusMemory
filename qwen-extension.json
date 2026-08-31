@@ -111,6 +111,17 @@
             "timeout": 8000
           }
         ]
+      },
+      {
+        "description": "SKILL.state — periodic checkpoint: when context grows 50k+ past the last checkpoint, spawn the detached Σ extraction worker (warm checkpoints: fault tolerance + fresher state before compaction). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}stop-checkpoint-state.js",
+            "name": "stop-checkpoint-state",
+            "timeout": 5000
+          }
+        ]
       }
     ],
     "PreCompact": [

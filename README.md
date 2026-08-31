@@ -454,6 +454,7 @@ The hooks use five Node.js scripts plus a shared state library in `hooks/`:
 | `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Stamp `memoryCalledEpoch = turnEpoch` on `search_memory`; `decisionRecorded=true`; clear `decisionDeclined` on new code edits |
 | `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny unless `memoryCalledEpoch === turnEpoch` (memory satisfied **this** turn); bypass when input contains an explicit file path |
 | `check-writeback.js` | Stop (once per turn at end) | If code change + completion signal + !decisionRecorded → ask user; else allow |
+| `stop-checkpoint-state.js` | Stop (once per turn) | SKILL.state (gated): when context grew 50k+ past the last checkpoint, spawn the shared detached Σ worker (warm checkpoints — fault tolerance + fresher state); reuses `precompact-extract-state.js --worker` |
 | `precompact-extract-state.js` | PreCompact (any trigger) | SKILL.state (gated): spawn a detached worker that extracts a structured state patch (Σ) from the transcript tail and exits in ms — native compaction is never blocked |
 | `sessionstart-inject-state.js` | SessionStart (`compact` only) | SKILL.state (gated): re-inject the session's Σ as `additionalContext` and bump `compact_count` |
 | `cleanup-session.js` | SessionEnd | Delete this session's state/audit files + Σ file; sweep files older than 7 days (sessions that crashed without SessionEnd) |
@@ -518,6 +519,12 @@ With the gate off or unset, both hooks return immediately at the entry (measured
 **How it works** (all fail-open — any failure leaves native compaction exactly as-is):
 
 ```
+Stop (every turn) — periodic checkpoint
+  │
+  └── if context grew 50k+ past the last checkpoint (input_tokens from contextUsage):
+        spawn the SAME detached worker as PreCompact → a warm Σ checkpoint
+        (fault tolerance: a crash leaves a recent Σ; fresher state mid-cycle)
+
 PreCompact (auto or manual)
   │
   ├── parent hook: spawns a DETACHED worker, emits a summarizer nudge, exits in ms
@@ -553,6 +560,7 @@ SessionStart (source = compact)
 - The extraction LLM is `MAIN_LLM` (the high-performance model) with `SUMMARY_LLM` as fallback. Qwen3-family models need the chat-template wrapping that `lib/skillstate.js` applies automatically (raw prompts make them emit a single EOS token).
 - **Extraction overhead (measured)** — per compaction: ~9.8k input tokens (the 30k rendered tail) + ~387 output tokens (the 6-key JSON patch), median ~3.6 s, and the worker runs **detached** in parallel with the native compaction, so it adds **zero user-facing latency**. The extraction prompt ends with `/no_think` to disable the Qwen3 thinking pass — extraction is a mechanical "copy facts into JSON" task, so the thinking pass is pure overhead. Disabling it cut the call from ~12.6 s to ~3.6 s (median) and output tokens from ~1,147 to ~387 (~67% fewer) with patch quality preserved (5/5 valid in a 5-sample batch).
 - Extraction runs **in parallel** with the native compaction because qwen-code keeps the raw transcript after compaction (it only appends a `chat_compression` record). On small contexts the native summary can finish first — then this round's injection is skipped (fail-open); the Σ still lands for the next compaction and in `work_memory`.
+- **Periodic checkpoints (fault tolerance)** — beyond the PreCompact extraction, a Stop hook (`stop-checkpoint-state.js`) spawns the same worker whenever the context grows `FOCUSMEMORY_SKILLSTATE_CHECKPOINT_INTERVAL` (default 50k) tokens past the last checkpoint, so a 200k session lands warm Σ checkpoints at ~50k/100k/150k before compaction. Stop is the only qwen-code hook whose payload carries `contextUsage` (`input_tokens`/`context_limit`/`context_usage`), so no upstream change is needed; the baseline re-anchors automatically after a compaction. Cost: 3 extra detached LLM calls per compaction cycle (zero user-facing latency).
 - Σ files are per-session, live in a separate directory (`~/.qwen/tmp/focus-memory/state/`) from the Hard Gate state, and are swept by `cleanup-session.js` on SessionEnd (plus a 7-day stale sweep).
 - Diagnostics: `~/.qwen/tmp/focus-memory/gate-telemetry.jsonl` — look for `hook: "precompact-extract-state"` entries (`extracted` with `keys`, or `extract_failed` / `worker_error` with a reason).
 
