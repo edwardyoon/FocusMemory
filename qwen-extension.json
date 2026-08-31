@@ -113,6 +113,34 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "description": "SKILL.state — spawn detached Σ extraction worker from the pre-compaction transcript (runs in parallel with native compaction, never blocks it). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}precompact-extract-state.js",
+            "name": "precompact-extract-state",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "description": "SKILL.state — re-inject structured execution state (Σ) after compaction so the model prefers explicit state over the prose summary. Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}sessionstart-inject-state.js",
+            "name": "sessionstart-inject-state",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
     "SessionEnd": [
       {
         "description": "Cleanup — remove this session's per-session state files and sweep stale files (7 days) left by sessions that ended without a SessionEnd event",

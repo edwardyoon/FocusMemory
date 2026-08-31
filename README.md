@@ -19,11 +19,9 @@ Optimized for Qwen Code
      (_)_)(_)=[]=============>  (FocusMemory Katana)
 ```
 
-![FocusMemory Katana](dia.png)
+Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place. And when the context window compacts, even what the session just did is reduced to a lossy prose summary — unless the execution state was captured.
 
-Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place.
-
-FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing.
+FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing. Beyond retrieval, it manages **context state across compaction** in the form of [SKILL.state](#skillstate--structured-execution-state-across-compaction): the session's structured execution state (Σ) is extracted before compaction and re-injected after, so the agent resumes from explicit state, not a lossy summary.
 
 ### Three pillars
 
@@ -323,6 +321,8 @@ qwen-code (upstream — zero modifications)
     │       ├── PreToolUse edit/write_file → track code changes, clear decline flag
     │       ├── PreToolUse grep_search/glob → deny unless stamped this turn
     │       ├── Stop                     → check-writeback (completion + ask)
+    │       ├── PreCompact               → SKILL.state: spawn detached Σ extraction worker
+    │       ├── SessionStart (compact)   → SKILL.state: re-inject Σ after compaction
     │       └── SessionEnd               → cleanup-session (per-session files + 7-day sweep)
     │
     └── AGENTS.md                    → Hard Gate search protocol
@@ -452,8 +452,11 @@ The hooks use five Node.js scripts plus a shared state library in `hooks/`:
 | `log-tool-call.js` | PreToolUse `search_memory`, `remember_decision`, `edit`, `write_file` | Stamp `memoryCalledEpoch = turnEpoch` on `search_memory`; `decisionRecorded=true`; clear `decisionDeclined` on new code edits |
 | `check-memory-first.js` | PreToolUse `grep_search`/`glob` | Deny unless `memoryCalledEpoch === turnEpoch` (memory satisfied **this** turn); bypass when input contains an explicit file path |
 | `check-writeback.js` | Stop (once per turn at end) | If code change + completion signal + !decisionRecorded → ask user; else allow |
-| `cleanup-session.js` | SessionEnd | Delete this session's state/audit files; sweep files older than 7 days (sessions that crashed without SessionEnd) |
-| `lib/state.js` | — (shared) | `updateState` (lock-protected state writes), atomic write, JSONL rotation, telemetry, stale sweep |
+| `precompact-extract-state.js` | PreCompact (any trigger) | SKILL.state (gated): spawn a detached worker that extracts a structured state patch (Σ) from the transcript tail and exits in ms — native compaction is never blocked |
+| `sessionstart-inject-state.js` | SessionStart (`compact` only) | SKILL.state (gated): re-inject the session's Σ as `additionalContext` and bump `compact_count` |
+| `cleanup-session.js` | SessionEnd | Delete this session's state/audit files + Σ file; sweep files older than 7 days (sessions that crashed without SessionEnd) |
+| `lib/state.js` | — (shared) | `updateState` (lock-protected state writes), `withLock`, atomic write, JSONL rotation, telemetry, stale sweep |
+| `lib/skillstate.js` | — (shared) | SKILL.state helpers: Σ load/merge (null-deletion), transcript tail extraction, extraction-LLM call, work_memory checkpoint upsert |
 
 Each script reads the hook event from stdin (`fs.readFileSync(0, 'utf8')`) and uses `event.session_id` to share state via a JSON file in `~/.qwen/tmp/tool-calls/`.
 
@@ -494,6 +497,61 @@ Both JSONL logs are size-bounded: once a file exceeds 512 KB it is truncated to 
 **Output formats:**
 - PreToolUse: `{ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow|deny" } }`
 - Stop: `{ decision: "allow" }` or `{ decision: "ask", reason: "...", stopReason: "..." }`
+
+### SKILL.state — structured execution state across compaction
+
+Long sessions get compacted: qwen-code replaces the conversation with an LLM prose summary, and fine-grained execution state (which files were touched, which checks are still pending, what was decided) is whatever the summary happened to preserve. **SKILL.state** implements the state-extraction idea from the [SKILL.state paper (arXiv:2608.26263)]: instead of relying on the prose summary, FocusMemory extracts a **structured state patch (Σ)** from the pre-compaction transcript and re-injects it after compaction, so the agent resumes from explicit state rather than reconstructed history.
+
+**Enable it** — one environment variable (process env first, then `FocusMemory/.env`):
+
+```bash
+# in FocusMemory/.env (or export in your shell / ~/.qwen/settings.json "env")
+FOCUSMEMORY_SKILLSTATE=on
+# optional: transcript window for extraction, rendered chars (default 30000, min 2000)
+# FOCUSMEMORY_SKILLSTATE_MAX_CHARS=30000
+```
+
+With the gate off or unset, both hooks return immediately at the entry (measured 25–40 ms, zero output) — auto-recall and the Hard Gate are byte-for-byte untouched.
+
+**How it works** (all fail-open — any failure leaves native compaction exactly as-is):
+
+```
+PreCompact (auto or manual)
+  │
+  ├── parent hook: spawns a DETACHED worker, emits a summarizer nudge, exits in ms
+  │   (native compaction is never blocked by the LLM call)
+  │
+  └── worker (parallel with the native compaction side-query):
+        transcript tail (default 30k rendered chars)
+        → extraction LLM (MAIN_LLM, falling back to SUMMARY_LLM) emits a JSON state patch
+        → merge into Σ  (Σ_{t+1} = Σ_t ⊕ Δ — union/replace/merge per key, null deletes)
+        → save ~/.qwen/tmp/focus-memory/state/<session_id>.json  (lock-protected)
+        → dual-write a work_memory point (type: "state_checkpoint") via BGE embedding
+        → telemetry: extracted / extract_failed / worker_error
+
+SessionStart (source = compact)
+  │
+  └── loads Σ, bumps compact_count, injects it as additionalContext:
+      "prefer it over the prose summary for 'where are we' questions"
+```
+
+**Σ schema** (extracted keys; omitted keys are unchanged, `null` deletes):
+
+| Key | Merge rule |
+|---|---|
+| `task_summary` | replace — one line: what this session is working on |
+| `current_step` | replace — what the agent is doing right now |
+| `pending_checks` | replace (snapshot) — verifications still outstanding |
+| `files_touched` | union (capped at 50) — files created/modified |
+| `decisions` | union (capped at 50) — decisions made in the segment |
+| `tests_status` | merge — `{ "<check>": "pass\|fail\|pending" }` |
+
+**Notes:**
+
+- The extraction LLM is `MAIN_LLM` (the high-performance model) with `SUMMARY_LLM` as fallback. Qwen3-family models need the chat-template wrapping that `lib/skillstate.js` applies automatically (raw prompts make them emit a single EOS token).
+- Extraction runs **in parallel** with the native compaction because qwen-code keeps the raw transcript after compaction (it only appends a `chat_compression` record). On small contexts the native summary can finish first — then this round's injection is skipped (fail-open); the Σ still lands for the next compaction and in `work_memory`.
+- Σ files are per-session, live in a separate directory (`~/.qwen/tmp/focus-memory/state/`) from the Hard Gate state, and are swept by `cleanup-session.js` on SessionEnd (plus a 7-day stale sweep).
+- Diagnostics: `~/.qwen/tmp/focus-memory/gate-telemetry.jsonl` — look for `hook: "precompact-extract-state"` entries (`extracted` with `keys`, or `extract_failed` / `worker_error` with a reason).
 
 ### Hook registration: single source — extension manifest only
 
@@ -596,11 +654,17 @@ FocusMemory/
 ├── logs/                   # Auto-generated state & log files (gitignored)
 ├── qwen-extension.json     # Qwen Code extension manifest (mcpServers + hooks)
 ├── AGENTS.md               # Hard Gate search protocol rules (agent context)
-├── hooks/                  # PreToolUse + Stop hook scripts
+├── hooks/                  # Hook scripts (UserPromptSubmit / PreToolUse / PreCompact / SessionStart / Stop / SessionEnd)
 │   ├── check-memory-first.js  # PreToolUse: deny grep/glob if memory not called
 │   ├── check-writeback.js     # Stop: detect completion, ask to record decision
 │   ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
 │   ├── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
+│   ├── precompact-extract-state.js    # PreCompact: SKILL.state — spawn detached Σ extraction worker
+│   ├── sessionstart-inject-state.js   # SessionStart(compact): SKILL.state — re-inject Σ
+│   ├── cleanup-session.js     # SessionEnd: per-session cleanup + 7-day sweep (incl. Σ files)
+│   ├── lib/                   # Shared hook libraries
+│   │   ├── state.js           # lock-protected state writes, atomic write, telemetry, sweep
+│   │   └── skillstate.js      # SKILL.state: Σ merge, transcript tail, extraction LLM, checkpoint
 │   └── package.json           # "type": "commonjs" — hooks are CJS even though the root package is ESM
 ├── LICENSE                 # MIT license
 ├── package.json

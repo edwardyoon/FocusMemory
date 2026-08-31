@@ -213,8 +213,8 @@
     </div>
 
 <div class="diagram-card reveal visible">
-  <div class="diagram-label">Memory Architecture — Retrieval Pipeline &amp; Autonomous TODO Loop</div>
-  <svg class="schematic" viewBox="0 0 1000 546" role="img" aria-label="Architecture diagram: Agent Query → Route → Retrieve → Prune → Inject → Agent/Model, plus autonomous TODO loop (PM2 scheduler → TODO file → spawn agent → execute → auto-ingest)">
+  <div class="diagram-label">Memory Architecture — Retrieval Pipeline · Autonomous TODO Loop · SKILL.state</div>
+  <svg class="schematic" viewBox="0 0 1000 706" role="img" aria-label="Architecture diagram: Agent Query → Route → Retrieve → Prune → Inject → Agent/Model, plus autonomous TODO loop (PM2 scheduler → TODO file → spawn agent → execute → auto-ingest), plus SKILL.state compaction band (PreCompact → Σ extract → Σ merge → SessionStart → agent resume)">
     <defs>
       <marker id="ahdr" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
         <path d="M0,0 L8,3 L0,6 Z" fill="#71717a" />
@@ -391,6 +391,46 @@
     <!-- daily loop back to the scheduler -->
     <path class="arrow-back" d="M 880,478 L 880,502 L 120,502 L 120,478" />
     <text class="band-note" x="500" y="516" text-anchor="middle">DAILY LOOP · RESUMES 23:40</text>
+
+    <!-- ── SKILL.state: surviving context compaction ────────────────── -->
+    <rect class="band-bg" x="20" y="560" width="960" height="132" rx="12" />
+    <text class="band-title" x="44" y="584">SKILL.STATE — SURVIVING CONTEXT COMPACTION</text>
+    <text class="band-tag" x="956" y="584" text-anchor="end">GATED · FOCUSMEMORY_SKILLSTATE=ON</text>
+
+    <rect class="node-bg" x="35" y="598" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="120" y="622" text-anchor="middle">PRECOMPACT HOOK</text>
+    <text class="band-sub" x="120" y="640" text-anchor="middle">trigger: auto · manual</text>
+    <text class="band-sub" x="120" y="655" text-anchor="middle">spawns detached worker</text>
+
+    <line class="arrow-line" x1="206" y1="634" x2="223" y2="634" />
+
+    <rect class="node-bg" x="225" y="598" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="310" y="622" text-anchor="middle">Σ EXTRACT</text>
+    <text class="band-sub" x="310" y="640" text-anchor="middle">transcript tail → state_patch</text>
+    <text class="band-sub" x="310" y="655" text-anchor="middle">parallel w/ native summary</text>
+
+    <line class="arrow-line" x1="396" y1="634" x2="413" y2="634" />
+
+    <rect class="node-bg" x="415" y="598" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="500" y="622" text-anchor="middle">Σ MERGE</text>
+    <text class="band-sub" x="500" y="640" text-anchor="middle">Σ⊕Δ · null-deletes-key</text>
+    <text class="band-sub" x="500" y="655" text-anchor="middle">per-session + work_memory</text>
+
+    <line class="arrow-line" x1="586" y1="634" x2="603" y2="634" />
+
+    <rect class="node-bg" x="605" y="598" width="170" height="72" rx="8" />
+    <text class="band-lbl" x="690" y="622" text-anchor="middle">SESSIONSTART</text>
+    <text class="band-sub" x="690" y="640" text-anchor="middle">source: compact</text>
+    <text class="band-sub" x="690" y="655" text-anchor="middle">Σ + prose re-injected</text>
+
+    <line class="arrow-line" x1="776" y1="634" x2="793" y2="634" />
+
+    <rect class="node-accent" x="795" y="598" width="170" height="72" rx="8" />
+    <text class="band-lbl-orange" x="880" y="622" text-anchor="middle">AGENT RESUME</text>
+    <text class="band-sub" x="880" y="640" text-anchor="middle">explicit state, not</text>
+    <text class="band-sub" x="880" y="655" text-anchor="middle">reconstructed history</text>
+
+    <text class="band-note" x="500" y="684" text-anchor="middle">OFF = native compaction only (hooks no-op, fail-open)</text>
   </svg>
 
   <div style="margin-top:36px;padding-top:28px;border-top:1px solid var(--border)">

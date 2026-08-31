@@ -201,6 +201,7 @@ module.exports = {
   stateFile,
   loadState,
   atomicWrite,
+  withLock,
   updateState,
   rotateJsonl,
   appendTelemetry,
