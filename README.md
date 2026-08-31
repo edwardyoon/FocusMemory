@@ -19,9 +19,31 @@ Optimized for Qwen Code
      (_)_)(_)=[]=============>  (FocusMemory Katana)
 ```
 
-Grep finds the code. Vectors find the meaning. Neither remembers the decision that made it true — or why it was written that way in the first place. And when the context window compacts, even what the session just did is reduced to a lossy prose summary — unless the execution state was captured.
+Grep finds the code. Vectors find the meaning. Neither remembers why the code exists, which decisions shaped it, or what the agent was doing when the context disappears.
 
-FocusMemory turns your workspace into a **living knowledge base** for AI coding agents. It pre-indexes business decisions, project documentation, code structure, and semantic history into Qdrant (vector), Meilisearch (full-text), and a lightweight summary LLM — then exposes them through a single MCP server with intelligent routing. Beyond retrieval, it manages **context state across compaction** in the form of [SKILL.state](#skillstate--structured-execution-state-across-compaction): the session's structured execution state (Σ) is extracted before compaction and re-injected after, so the agent resumes from explicit state, not a lossy summary.
+When a long-context session compacts, even the work that just happened can collapse into a lossy prose summary. FocusMemory preserves that missing layer as structured execution state, so the agent can resume from what it actually knew and was doing — not from a reconstruction of what probably happened.
+
+FocusMemory provides a persistent memory and execution-state layer for AI coding agents, combining semantic search, full-text retrieval, project knowledge, and structured session state behind a single MCP server.
+
+Beyond retrieval, FocusMemory maintains **structured execution state (Σ) continuously throughout a long-context session**. Instead of waiting until context exhaustion to extract state, every context stop/checkpoint periodically persists the current state to disk. When `PreCompact` finally occurs, FocusMemory performs one final state extraction before compaction.
+
+This turns state management from a single point of failure at the end of a 200k-token context into a sequence of durable checkpoints:
+
+`50k → Σ₁ → 100k → Σ₂ → 150k → Σ₃ → PreCompact → Σ_final`
+
+If the session crashes or the final asynchronous extraction loses the race with native compaction, the most recent checkpoint can still be restored at `SessionStart`. The amount of uncompacted execution state that can be lost is therefore bounded by the checkpoint interval rather than the entire context window.
+
+The approach is particularly useful for **extreme long-context local inference**. Rather than reserving excessive VRAM for high-precision KV cache, FocusMemory allows the inference engine to maximize usable context by pushing the KV cache toward lower-bit quantization. The persistent execution state acts as a durable semantic checkpoint above that lossy KV layer: information that may become degraded or effectively inaccessible in aggressively quantized KV cache can be recovered from the explicitly persisted state and workspace knowledge base.
+
+In other words, FocusMemory separates two concerns:
+
+* **KV cache:** maximize the amount of working context that fits in VRAM, even with aggressive quantization.
+* **Structured state (Σ):** preserve the semantic state of the coding session independently of the transient context window.
+* **PreCompact:** perform the final checkpoint before the context is compacted.
+* **MCP knowledge base:** provide durable project knowledge that does not depend on the current context window at all.
+
+This makes long-context coding less dependent on maintaining a perfectly preserved 200k-token conversation in VRAM. The context window becomes a high-throughput working memory, while FocusMemory provides the durable state and knowledge layer underneath it.
+
 
 ### Four pillars
 
