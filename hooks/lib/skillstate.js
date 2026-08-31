@@ -266,7 +266,11 @@ function extractTranscriptTail(transcriptPath, budgetChars = 30000) {
 
 /**
  * Build the state-patch extraction prompt. Asks for a JSON patch only —
- * explicitly not a prose summary (the point of SKILL.state).
+ * explicitly not a prose summary (the point of SKILL.state). Ends with
+ * /no_think: extraction is a mechanical "copy facts into JSON" task, so the
+ * Qwen3 thinking pass is pure overhead — disabling it cuts the call's
+ * generated tokens and latency without hurting patch quality (fail-open: if
+ * the model ignores the token it simply thinks as before, no regression).
  * @param {object} sigma - current Σ (may be {})
  * @param {string} transcriptText - compact transcript tail
  * @returns {string}
@@ -298,7 +302,8 @@ ${transcriptText}
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value (omit if unchanged from current state).
 - Use only facts present in the conversation. No speculation.
-- Output JSON only. No markdown fences, no commentary.`;
+- Output JSON only. No markdown fences, no commentary.
+/no_think`;
 }
 
 /**
