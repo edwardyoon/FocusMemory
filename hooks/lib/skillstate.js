@@ -17,7 +17,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { withLock, atomicWrite, appendTelemetry } = require('./state.js');
+const { withLock, atomicWrite, appendTelemetry, STATE_DIR } = require('./state.js');
 
 const HOME = process.env.HOME || process.env.USERPROFILE || '.';
 const SIGMA_DIR = path.join(HOME, '.qwen', 'tmp', 'focus-memory', 'state');
@@ -134,6 +134,79 @@ function sweepSigma(maxAgeMs, prefix = null) {
     } catch {}
   }
   return removed;
+}
+
+// ─── Per-Stop state-change detection + anchor rendering ─────────────────
+
+// Tool calls that mechanically change execution state — their presence in
+// the tool-call JSONL since the last extraction is the primary per-Stop
+// trigger (prose-only turns rarely move state and must not pay an LLM call).
+const MUTATING_TOOLS = new Set(['edit', 'write_file', 'remember_decision']);
+
+/**
+ * True when the session's tool-call JSONL (lib/state.js STATE_DIR) has a
+ * mutating tool call appended after `fromBytes` bytes. The log is
+ * append-only per session and rotated in place once over 512KB — a file
+ * smaller than `fromBytes` was rotated, so the whole file counts as fresh.
+ * A slice starting mid-line (concurrent append between stat and read) just
+ * fails JSON.parse on that fragment and is skipped (fail-open: the 50k
+ * context-growth fallback still fires when it matters).
+ * @param {string} sessionId
+ * @param {number} [fromBytes=0] byte offset of the last extraction
+ * @returns {boolean}
+ */
+function hasMutatingCallsSince(sessionId, fromBytes = 0) {
+  const file = path.join(STATE_DIR, `${sessionId}.jsonl`);
+  try {
+    const size = fs.statSync(file).size;
+    const offset = size < fromBytes ? 0 : fromBytes;
+    if (size <= offset) return false;
+    const len = Math.min(size - offset, 256 * 1024); // cap the per-Stop scan
+    const fd = fs.openSync(file, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      return buf.toString('utf8').split('\n').some((line) => {
+        if (!line) return false;
+        try {
+          return MUTATING_TOOLS.has(JSON.parse(line).tool);
+        } catch {
+          return false;
+        }
+      });
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Render a compact "where are we" anchor from Σ for per-turn injection
+ * (UserPromptSubmit hook). One line, capped — the anchor must cost a
+ * negligible fraction of the context it is meant to protect.
+ * @param {object} sigma
+ * @returns {string} compact anchor text (empty string when Σ has no content)
+ */
+function renderAnchor(sigma) {
+  if (!sigma || typeof sigma !== 'object') return '';
+  const parts = [];
+  if (sigma.task_summary) parts.push(`task: ${sigma.task_summary}`);
+  if (sigma.current_step) parts.push(`step: ${sigma.current_step}`);
+  if (Array.isArray(sigma.pending_checks) && sigma.pending_checks.length) {
+    parts.push(`pending: ${sigma.pending_checks.slice(0, 5).join('; ')}`);
+  }
+  if (Array.isArray(sigma.files_touched) && sigma.files_touched.length) {
+    parts.push(`files: ${sigma.files_touched.slice(-5).join(', ')}`);
+  }
+  if (sigma.tests_status && typeof sigma.tests_status === 'object' && !Array.isArray(sigma.tests_status)) {
+    const failing = Object.entries(sigma.tests_status)
+      .filter(([, v]) => v === 'fail')
+      .map(([k]) => k);
+    if (failing.length) parts.push(`failing: ${failing.join(', ')}`);
+  }
+  return parts.join(' | ');
 }
 
 // ─── Σ merge (paper: Σ_{t+1} = Σ_t ⊕ Δ, null deletes a key) ─────────────
@@ -434,6 +507,21 @@ function extractJsonPatch(text) {
 // ─── work_memory dual-write ───────────────────────────────────────────────
 
 /**
+ * Deterministic point ID for a session's state_checkpoint — Qdrant accepts
+ * only positive ints or UUIDs, so the sha256 of a session-scoped key is
+ * formatted as a UUID (8-4-4-4-12). Per-Stop extraction would otherwise
+ * create a fresh near-identical work_memory point every turn (flooding);
+ * with a stable ID each session owns exactly one checkpoint point that is
+ * upserted in place.
+ * @param {string} sessionId
+ * @returns {string} UUID-formatted point ID
+ */
+function checkpointId(sessionId) {
+  const h = crypto.createHash('sha256').update(`state_checkpoint:${sessionId}`).digest('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`;
+}
+
+/**
  * Embed text via the local BGE server.
  * @param {string} text
  * @returns {Promise<number[]|null>}
@@ -486,7 +574,8 @@ async function recordCheckpoint(sigma, cwd, trigger) {
       body: JSON.stringify({
         points: [
           {
-            id: crypto.randomUUID(),
+            // Stable per-session ID: one upserted point, not one per extraction
+            id: sigma.session_id ? checkpointId(sigma.session_id) : crypto.randomUUID(),
             vector,
             payload: {
               type: 'state_checkpoint',
@@ -527,6 +616,10 @@ module.exports = {
   saveSigma,
   sweepSigma,
   mergeSigma,
+  SCHEMA_KEYS,
+  hasMutatingCallsSince,
+  renderAnchor,
+  checkpointId,
   extractTranscriptTail,
   buildExtractionPrompt,
   wrapChatTemplate,

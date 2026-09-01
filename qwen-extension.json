@@ -52,6 +52,17 @@
             "timeout": 3000
           }
         ]
+      },
+      {
+        "description": "SKILL.state — per-turn state anchor: when the context has grown past the token threshold, inject a compact one-line Σ 'where are we' reminder (no LLM call, millisecond-scale). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}userprompt-inject-state.js",
+            "name": "userprompt-inject-state",
+            "timeout": 3000
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -113,7 +124,7 @@
         ]
       },
       {
-        "description": "SKILL.state — periodic checkpoint: when context grows 50k+ past the last checkpoint, spawn the detached Σ extraction worker (warm checkpoints: fault tolerance + fresher state before compaction). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "description": "SKILL.state — per-Stop checkpoint: records last_input_tokens every turn and spawns the detached Σ extraction worker when (1) a mutating tool call (edit/write_file/remember_decision) was logged since the last extraction, or (2) the context grew 50k+ past it (prose-only drift fallback). Warm checkpoints: fault tolerance + fresher state before compaction. Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
         "hooks": [
           {
             "type": "command",

@@ -25,11 +25,13 @@ When a long-context session compacts, even the work that just happened can colla
 
 FocusMemory provides a persistent memory and execution-state layer for AI coding agents, combining semantic search, full-text retrieval, project knowledge, and structured session state behind a single MCP server.
 
-Beyond retrieval, FocusMemory maintains **structured execution state (Σ) continuously throughout a long-context session**. Instead of waiting until context exhaustion to extract state, every checkpoint periodically persists the current state to disk. When `PreCompact` finally occurs, FocusMemory performs one final state extraction before compaction:
+Beyond retrieval, FocusMemory maintains **structured execution state (Σ) continuously throughout a long-context session**. Instead of waiting until context exhaustion to extract state, every state-changing turn persists the current state to disk: a `Stop` hook detects when a turn actually changed something (a file edit, a decision recorded) and spawns a detached extraction, with a context-growth fallback for prose-only drift. When `PreCompact` finally occurs, FocusMemory performs one final state extraction before compaction:
 
-`50k → Σ₁ → 100k → Σ₂ → 150k → Σ₃ → PreCompact → Σ_final`
+`turn: edit → Σ₁ · turn: question → (skip) · 50k growth → Σ₂ · turn: edit → Σ₃ → PreCompact → Σ_final`
 
-If the session crashes or the final extraction loses the race with native compaction, the most recent checkpoint can still be restored at `SessionStart`. The amount of uncompacted execution state that can be lost is therefore bounded by the checkpoint interval, not the entire context window.
+While the session runs, a `UserPromptSubmit` hook injects a compact one-line state anchor each turn once the context has grown large enough, so the model keeps conditioning on explicit state instead of re-deriving it from an ever-growing transcript.
+
+If the session crashes or the final extraction loses the race with native compaction, the most recent checkpoint can still be restored at `SessionStart`. The amount of uncompacted execution state that can be lost is therefore bounded by the time since the last state-changing turn, not the entire context window.
 
 This is particularly useful for **extreme long-context local inference**: rather than reserving excessive VRAM for high-precision KV cache, FocusMemory lets the inference engine push the KV cache toward lower-bit quantization. Persisted state acts as a durable checkpoint above that lossy KV layer — information that degrades in aggressively quantized KV cache can be recovered from explicitly persisted state instead.
 
@@ -135,15 +137,22 @@ Long sessions get compacted: qwen-code replaces the conversation with a lossy pr
 ```bash
 # FocusMemory/.env
 FOCUSMEMORY_SKILLSTATE=on
-# optional, default 30000 (min 2000)
+# optional, default 30000 (min 2000) — transcript tail size for extraction
 # FOCUSMEMORY_SKILLSTATE_MAX_CHARS=30000
+# optional, default 50000 — context growth (tokens) that triggers the Stop fallback
+# FOCUSMEMORY_SKILLSTATE_CHECKPOINT_INTERVAL=50000
+# optional, default 50000 — context size (tokens) at which the per-turn anchor is injected
+# FOCUSMEMORY_SKILLSTATE_INJECT_MIN_TOKENS=50000
 ```
-Off by default — with the flag unset, both hooks return immediately (25–40 ms, zero output); auto-recall and the Hard Gate are untouched.
+Off by default — with the flag unset, all hooks return immediately (25–40 ms, zero output); auto-recall and the Hard Gate are untouched.
 
 **How it works** (fail-open throughout — any failure leaves native compaction exactly as-is):
 
-- **PreCompact** spawns a *detached* worker and exits in milliseconds — native compaction is never blocked. The worker reads the transcript tail (default 30k chars), calls the extraction LLM (MAIN_LLM → SUMMARY_LLM fallback) for a JSON state patch, merges it into Σ (`Σ_{t+1} = Σ_t ⊕ Δ`; null deletes a key), saves it, and dual-writes a `work_memory` checkpoint.
-- **Periodic checkpoints**: a `Stop` hook spawns the same worker whenever context grows 50k+ tokens past the last checkpoint (using the `contextUsage` field qwen-code already provides on `Stop`), so a 200k session lands warm checkpoints at ~50k/100k/150k before compaction ever fires.
+- **Stop (every turn)** records the current context size (`last_input_tokens`, from the `contextUsage` field qwen-code provides on `Stop`) and spawns a *detached* worker when either trigger fires:
+  - **state change** (primary) — a mutating tool call (`edit` / `write_file` / `remember_decision`) was logged since the last extraction. Mechanical detection from the tool-call log, no LLM in the hook itself — prose-only turns pay no extraction cost.
+  - **context growth** (fallback) — input tokens grew 50k+ past the last extraction, covering semantic drift that touches no file (decisions made in prose only).
+- **PreCompact** spawns the same worker as a final pass and exits in milliseconds — native compaction is never blocked. The worker reads the transcript tail (default 30k chars), calls the extraction LLM (MAIN_LLM → SUMMARY_LLM fallback) for a JSON state patch, merges it into Σ (`Σ_{t+1} = Σ_t ⊕ Δ`; null deletes a key), saves it, and dual-writes a `work_memory` checkpoint under a stable per-session point ID — one upserted point, not one per extraction.
+- **UserPromptSubmit (every turn)** — once the recorded context size passes the threshold (default 50k input tokens), injects a compact one-line state anchor rendered from Σ (`task | step | pending | files | failing checks`) as `additionalContext`. No LLM call, millisecond-scale — counters lost-in-the-middle dilution in long live sessions. If the previous turn's worker is still running, the anchor is one turn stale; harmless, since the live tail of the transcript covers everything since.
 - **SessionStart** (`compact` only) loads Σ and injects it as `additionalContext`, preferred over the native prose summary for "where are we" questions.
 
 **Σ schema:**
@@ -156,6 +165,8 @@ Off by default — with the flag unset, both hooks return immediately (25–40 m
 | `files_touched` | union, capped at 50 |
 | `decisions` | union, capped at 50 |
 | `tests_status` | merge (`{ "<check>": "pass\|fail\|pending" }`) |
+
+Internal bookkeeping keys (owned by the hooks, never part of an extraction patch, excluded from the anchor): `last_input_tokens` (context size at the last Stop), `last_checkpoint_tokens` (growth-trigger baseline), `last_extraction_log_bytes` (state-change trigger offset into the tool-call log), `compact_count`.
 
 **Measured overhead:** ~9.8k input tokens (30k rendered tail) + ~387 output tokens per extraction, median 3.6s — runs detached in parallel with native compaction, so it adds no user-facing latency. (`/no_think` disables the Qwen3 thinking pass for this mechanical extraction step: cut the call from ~12.6s to ~3.6s and output tokens from ~1,147 to ~387, with patch quality preserved across a 5-sample check.)
 
@@ -180,17 +191,24 @@ Before formatting, the receiver searches FocusMemory for related context (hard g
 
 **Daily loop:**
 ```
-23:40 (PM2 timer) → todoRunner.js checks todos/{date}.md
-  → spawns qwen agent to process [ ] items sequentially
+23:40 (PM2 timer) → todoRunner.js looks for today's todos/{date}.md
+  → if none: catch-up scan of the last 3 days for unfinished items ([ ]/[~]/[!])
+  → spawns qwen agent to process pending items sequentially
   → checkboxes: [ ] → [~] → [x] / [!]
+  → final verification: re-reads the file, confirms no pending items remain,
+    logs ERROR with the extracted failure reason when any do
   → on completion: autoIngest.js re-indexes
 ```
+The catch-up scan closes the date-rollover gap: a run that dies just before midnight (crash, agent error) used to orphan the day's file, since the next morning's run only looked at the new date. Now any unfinished item within the lookback window is picked up.
+
+**Failure tracking:** `todo_runner_state.json` (next to the runner) keeps `consecutiveFailures`, `lastRun`, and a 30-entry run history — a dead agent is visible in the log and state file instead of silently skipping the day. `--dry-run` reports what the next run would pick up without executing anything.
 
 **Default runner instructions:** no commit/push/deploy (user reviews next morning), sequential processing only, checkbox progress tracking, local-environment verification only.
 
 ```bash
 pm2 start FocusMemory/todoRunner.js --name todo-runner   # auto-schedules at 23:40
 node FocusMemory/todoRunner.js --now                       # manual trigger
+node FocusMemory/todoRunner.js --dry-run                   # preview the target file
 ```
 
 <br>
@@ -304,9 +322,10 @@ FocusMemory/
 │   ├── check-writeback.js     # Stop: detect completion, ask to record decision
 │   ├── log-tool-call.js       # PreToolUse: track tool calls and state flags
 │   ├── reset-memory-flag.js   # UserPromptSubmit: reset turn-level flags
+│   ├── userprompt-inject-state.js    # SKILL.state: per-turn state anchor injection
 │   ├── precompact-extract-state.js   # SKILL.state: spawn detached Σ extraction worker
 │   ├── sessionstart-inject-state.js  # SKILL.state: re-inject Σ after compaction
-│   ├── stop-checkpoint-state.js      # SKILL.state: periodic warm checkpoints
+│   ├── stop-checkpoint-state.js      # SKILL.state: per-Stop state-change + growth checkpoints
 │   ├── cleanup-session.js     # SessionEnd: per-session + 7-day sweep
 │   └── lib/                   # state.js (locking, atomic write, telemetry), skillstate.js (Σ merge, extraction)
 ├── docs/ plans/               # Project knowledge inputs (created by init.js)

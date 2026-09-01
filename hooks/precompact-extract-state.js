@@ -57,6 +57,15 @@ async function runWorker(event) {
   }
 
   const next = ss.mergeSigma(sigma, patch);
+  // The base Σ was loaded before the LLM call; a concurrent Stop hook may
+  // have updated bookkeeping keys (last_input_tokens, last_checkpoint_tokens,
+  // last_extraction_log_bytes) during that window. Re-copy the non-schema
+  // keys from a fresh load so this save cannot roll them back (lost update).
+  const fresh = ss.loadSigma(sessionId);
+  for (const k of Object.keys(fresh)) {
+    if (ss.SCHEMA_KEYS.includes(k) || k === 'session_id' || k === 'updated_at') continue;
+    next[k] = fresh[k];
+  }
   next.session_id = sessionId;
   next.updated_at = new Date().toISOString();
   ss.saveSigma(sessionId, next);
