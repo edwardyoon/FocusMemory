@@ -2,9 +2,15 @@
 /**
  * todoRunner.js — Scheduled TODO execution runner (PM2-managed).
  *
- * Runs daily at 23:40. Checks for today's TODO file in todos/,
- * spawns `qwen` with default instructions + execution prompt,
- * logs output, and triggers FocusMemory auto-ingest on completion.
+ * Runs daily at 23:40.
+ * 1. Target selection: today's TODO file; if it has no pending items (or is
+ *    missing), scans the last CATCHUP_LOOKBACK_DAYS for the most recent file
+ *    with leftovers, so a failed run is never orphaned by a date rollover.
+ * 2. Spawns `qwen` with default instructions + execution prompt, logs output.
+ * 3. Final verification: re-reads the file, counts remaining pending item
+ *    headers, logs them, and records the outcome (exit code, duration,
+ *    pending before/after, error line) in todo_runner_state.json.
+ * 4. Triggers FocusMemory auto-ingest on completion.
  */
 
 import { spawn } from "child_process";
@@ -18,6 +24,8 @@ const TODOS_DIR = path.join(WORKSPACE, "todos");
 const LOG_DIR = path.join(WORKSPACE, "logs");
 const QWEN_BIN = "/opt/homebrew/bin/qwen";
 const FOCUSMEMORY_DIR = __dirname;
+const CATCHUP_LOOKBACK_DAYS = 3; // scan this many past days for leftover items
+const STATE_FILE = path.join(FOCUSMEMORY_DIR, "todo_runner_state.json");
 
 // ─── Default instructions (injected into every execution prompt) ───
 
@@ -31,11 +39,6 @@ const DEFAULT_INSTRUCTIONS = `CRITICAL INSTRUCTIONS:
 
 // ─── Helpers ──────────────────────────────────────────────────────
 
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 function log(message) {
   const line = `[${new Date().toISOString()}] ${message}`;
   console.log(line);
@@ -45,6 +48,85 @@ function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
   }
+}
+
+/**
+ * Local date string (YYYY-MM-DD), shifted back by N days.
+ * @param {number} [daysAgo=0]
+ * @returns {string}
+ */
+function dateStr(daysAgo = 0) {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Top-level item headers that are not completed: "## [ ]", "## [~]", "## [!]".
+ * Inner step checkboxes are ignored — the item header is the contract.
+ * @param {string} content
+ * @returns {string[]} matching header lines
+ */
+function listPendingHeaders(content) {
+  return content.match(/^## \[(?: |~|!)\].*$/gm) || [];
+}
+
+/**
+ * Pick the TODO file to process: today's file if it has pending items,
+ * otherwise the most recent past file within CATCHUP_LOOKBACK_DAYS with
+ * leftovers (a failed run must not be orphaned by a date rollover).
+ * @returns {{file: string, date: string, isCatchup: boolean} | null}
+ */
+function findTargetFile() {
+  for (let i = 0; i <= CATCHUP_LOOKBACK_DAYS; i++) {
+    const date = dateStr(i);
+    const file = path.join(TODOS_DIR, `${date}.md`);
+    if (!fs.existsSync(file)) continue;
+    const pending = listPendingHeaders(fs.readFileSync(file, "utf-8"));
+    if (pending.length > 0) {
+      return { file, date, isCatchup: i > 0 };
+    }
+  }
+  return null;
+}
+
+/**
+ * Pull the most relevant error line from a run log.
+ * @param {string} logPath
+ * @returns {string} error line, or "" if none found
+ */
+function extractError(logPath) {
+  try {
+    const log = fs.readFileSync(logPath, "utf-8");
+    const apiErrors = log.match(/\[?API Error:[^\n]*/g);
+    if (apiErrors && apiErrors.length > 0) {
+      return apiErrors[apiErrors.length - 1].trim();
+    }
+    const spawnErr = log.match(/=== spawn error: [^\n]*/);
+    if (spawnErr) return spawnErr[0].trim();
+  } catch {
+    // log file missing — no extractable error
+  }
+  return "";
+}
+
+/**
+ * Record the run outcome for error tracking (last run + rolling 30).
+ * @param {object} record
+ * @returns {void}
+ */
+function saveState(record) {
+  let state = { consecutiveFailures: 0, history: [] };
+  try {
+    state = JSON.parse(fs.readFileSync(STATE_FILE, "utf-8"));
+  } catch {
+    // first run — start fresh
+  }
+  state.consecutiveFailures =
+    record.exitCode !== 0 ? (state.consecutiveFailures || 0) + 1 : 0;
+  state.lastRun = record;
+  state.history = [...(state.history || []), record].slice(-30);
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
 /**
@@ -87,32 +169,41 @@ function runProcess(cmd, args, logPath, cwd, env) {
 
 // ─── Main execution ───────────────────────────────────────────────
 
-async function runTodo() {
-  const today = todayStr();
-  const todoFile = path.join(TODOS_DIR, `${today}.md`);
-  const logPath = path.join(LOG_DIR, `todo-${today}.log`);
+/**
+ * Execute the TODO run: pick target file, spawn qwen, auto-ingest,
+ * then verify completion and record the outcome.
+ * @param {string} [trigger="schedule"] "schedule" | "manual"
+ * @returns {Promise<void>}
+ */
+async function runTodo(trigger = "schedule") {
+  const target = findTargetFile();
+  const logPath = target ? path.join(LOG_DIR, `todo-${target.date}.log`) : null;
 
   ensureLogDir();
 
-  log(`--- Todo runner triggered for ${today} ---`);
-
-  if (!fs.existsSync(todoFile)) {
-    log(`No TODO file found: ${todoFile}. Exiting.`);
+  if (!target) {
+    log(`No pending items in today's file or the last ${CATCHUP_LOOKBACK_DAYS} days. Nothing to do.`);
     return;
   }
 
-  const content = fs.readFileSync(todoFile, "utf-8");
-  const hasPending = /\[ \]/.test(content) || /\[~\]/.test(content);
+  const { file: todoFile, date, isCatchup } = target;
+  const startedAt = Date.now();
 
-  if (!hasPending) {
-    log(`No pending items in ${today}.md (no [ ] or [~] found). Exiting.`);
-    return;
-  }
+  log(
+    `--- Todo runner triggered for ${date} ` +
+      `(${isCatchup ? "CATCH-UP from earlier file" : "daily"}, trigger: ${trigger}) ---`
+  );
+
+  const pendingBefore = listPendingHeaders(fs.readFileSync(todoFile, "utf-8"));
 
   const prompt = `${DEFAULT_INSTRUCTIONS}
 
-Read today's TODO file: ${todoFile}
-Execute the pending items (marked [ ] or [~]) from top to bottom, one at a time.
+Read the TODO file: ${todoFile}${
+    isCatchup
+      ? ` (carry-over from ${date} — resume exactly where it left off)`
+      : " (today's TODO file)"
+  }
+Execute the pending items (marked [ ], [~] or [!]) from top to bottom, one at a time.
 After each item, update its checkbox and record a 1-2 line summary in the file.`;
 
   // Build env for qwen: ensure PATH and project dir are explicit
@@ -141,6 +232,55 @@ After each item, update its checkbox and record a 1-2 line summary in the file.`
     FOCUSMEMORY_DIR,
   );
   log(`auto-ingest exited with code ${ingestCode}`);
+
+  // ── Final verification: did the run actually finish the work? ──
+  let pendingAfter = null;
+  try {
+    pendingAfter = listPendingHeaders(fs.readFileSync(todoFile, "utf-8"));
+  } catch {
+    log("Final check: TODO file missing after run — cannot verify.");
+  }
+
+  const durationSec = Math.round((Date.now() - startedAt) / 1000);
+  const error = code !== 0 ? extractError(logPath) : "";
+
+  if (pendingAfter !== null) {
+    if (pendingAfter.length === 0) {
+      log(
+        `Final check: ALL items completed ` +
+          `(was ${pendingBefore.length} pending, ${durationSec}s)`
+      );
+    } else {
+      log(
+        `Final check: ${pendingBefore.length} → ${pendingAfter.length} pending ` +
+          `(${durationSec}s). Remaining:`
+      );
+      for (const header of pendingAfter) {
+        log(`  ${header.trim()}`);
+      }
+    }
+  }
+  if (code !== 0) {
+    log(
+      `ERROR: qwen failed (exit ${code})${error ? ` — ${error}` : ""}. ` +
+        `Leftover items will be picked up by the next run.`
+    );
+  }
+
+  saveState({
+    at: new Date().toISOString(),
+    trigger,
+    file: path.relative(WORKSPACE, todoFile),
+    date,
+    catchup: isCatchup,
+    exitCode: code,
+    durationSec,
+    pendingBefore: pendingBefore.length,
+    pendingAfter: pendingAfter === null ? null : pendingAfter.length,
+    remaining:
+      pendingAfter === null ? ["<file missing>"] : pendingAfter.map((h) => h.trim()),
+    error,
+  });
 }
 
 // ─── Scheduler ────────────────────────────────────────────────────
@@ -179,10 +319,25 @@ log(`todoRunner started (PID ${process.pid})`);
 log(`TODOS_DIR: ${TODOS_DIR}`);
 log(`Log directory: ${LOG_DIR}`);
 
+// Dry run: resolve target + pending items, print, exit (no qwen, no state write)
+if (process.argv.includes("--dry-run")) {
+  const target = findTargetFile();
+  if (!target) {
+    log("Dry run: no pending items in today's file or the lookback window.");
+    process.exit(0);
+  }
+  const pending = listPendingHeaders(fs.readFileSync(target.file, "utf-8"));
+  log(`Dry run: target=${target.date} (catchup=${target.isCatchup}), pending=${pending.length}`);
+  for (const header of pending) {
+    log(`  ${header.trim()}`);
+  }
+  process.exit(0);
+}
+
 // Support manual trigger: `node todoRunner.js --now`
 if (process.argv.includes("--now")) {
   log("Manual trigger (--now)");
-  runTodo()
+  runTodo("manual")
     .catch((err) => log(`Error: ${err.message}`))
     .finally(() => scheduleNext());
 } else {
