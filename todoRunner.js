@@ -11,14 +11,23 @@
  *    headers, logs them, and records the outcome (exit code, duration,
  *    pending before/after, error line) in todo_runner_state.json.
  * 4. Triggers FocusMemory auto-ingest on completion.
+ * 5. Optional nightly verification: when NIGHTLY_TEST_SCRIPT is set in
+ *    FocusMemory/.env, the script runs ONCE at the very end of a fully
+ *    completed run (all items [x] + clean qwen exit) — never per item.
+ *    On a non-zero exit, one qwen fix round is delegated, then the script
+ *    is re-run as the independent arbiter. Unset = disabled (no-op).
  */
 
 import { spawn } from "child_process";
+import dotenv from "dotenv";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Load FocusMemory/.env (existing process env wins over file values).
+dotenv.config({ path: path.join(__dirname, ".env") });
 const WORKSPACE = path.resolve(__dirname, "..");
 const TODOS_DIR = path.join(WORKSPACE, "todos");
 const LOG_DIR = path.join(WORKSPACE, "logs");
@@ -167,6 +176,59 @@ function runProcess(cmd, args, logPath, cwd, env) {
   });
 }
 
+/**
+ * Run the optional nightly verification script (NIGHTLY_TEST_SCRIPT in
+ * FocusMemory/.env, absolute or workspace-relative). Invoked exactly once
+ * per runTodo cycle — never per item — and only after ALL items completed
+ * with a clean qwen exit. On failure, one fix round is delegated to qwen
+ * (with the failure log), then the script is re-run as the independent
+ * arbiter. No retry loop beyond that single fix round.
+ * @param {string} logPath
+ * @param {object} env qwen spawn env (PATH/QWEN_CODE_PROJECT_DIR)
+ * @returns {Promise<object|null>} result record, or null when not configured
+ */
+async function runNightlyTest(logPath, env) {
+  const script = (process.env.NIGHTLY_TEST_SCRIPT || "").trim();
+  if (!script) return null;
+  const scriptPath = path.isAbsolute(script) ? script : path.resolve(WORKSPACE, script);
+  if (!fs.existsSync(scriptPath)) {
+    log(`Nightly test: script not found (${scriptPath}) — skipped.`);
+    return { configured: true, ran: false, passed: false, fixed: false, reason: "script not found" };
+  }
+
+  const startedAt = Date.now();
+  log("Nightly test: running verification script...");
+  const firstCode = await runProcess("bash", [scriptPath], logPath, WORKSPACE);
+
+  if (firstCode === 0) {
+    const durationSec = Math.round((Date.now() - startedAt) / 1000);
+    log(`Nightly test: PASSED (${durationSec}s)`);
+    return { configured: true, ran: true, passed: true, fixed: false, exitCode: 0, durationSec };
+  }
+
+  log(`Nightly test: FAILED (exit ${firstCode}) — delegating one fix round to qwen...`);
+  const fixPrompt = `${DEFAULT_INSTRUCTIONS}
+
+The nightly verification script failed after the TODO run completed.
+Script: ${scriptPath}
+Its full output is appended to: ${logPath} (see the last "bash ${scriptPath}" section).
+
+Diagnose the failing tests and fix the workspace code (local environment only, 127.0.0.1).
+Then re-run the script yourself and confirm it exits 0.
+Do NOT modify the verification script itself unless a test is objectively wrong — if you do, explain why.`;
+  const fixCode = await runProcess(QWEN_BIN, ["-p", fixPrompt], logPath, WORKSPACE, env);
+  log(`Nightly test: fix round exited with code ${fixCode} — re-running script to verify...`);
+  const reCode = await runProcess("bash", [scriptPath], logPath, WORKSPACE);
+  const durationSec = Math.round((Date.now() - startedAt) / 1000);
+
+  if (reCode === 0) {
+    log(`Nightly test: PASSED after fix round (${durationSec}s)`);
+    return { configured: true, ran: true, passed: true, fixed: true, exitCode: 0, durationSec };
+  }
+  log(`Nightly test: still FAILED after fix round (exit ${reCode}) — leaving for morning review.`);
+  return { configured: true, ran: true, passed: false, fixed: true, exitCode: reCode, durationSec };
+}
+
 // ─── Main execution ───────────────────────────────────────────────
 
 /**
@@ -267,6 +329,12 @@ After each item, update its checkbox and record a 1-2 line summary in the file.`
     );
   }
 
+  // ── Nightly verification (optional): ONCE, only after a fully completed run ──
+  let nightly = null;
+  if (code === 0 && pendingAfter !== null && pendingAfter.length === 0) {
+    nightly = await runNightlyTest(logPath, qwenEnv);
+  }
+
   saveState({
     at: new Date().toISOString(),
     trigger,
@@ -280,6 +348,7 @@ After each item, update its checkbox and record a 1-2 line summary in the file.`
     remaining:
       pendingAfter === null ? ["<file missing>"] : pendingAfter.map((h) => h.trim()),
     error,
+    nightly,
   });
 }
 
