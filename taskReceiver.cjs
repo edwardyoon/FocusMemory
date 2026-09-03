@@ -265,9 +265,9 @@ function formatContextEntry(r, collection) {
  * - Qdrant: work_memory, decision_chains (vector top 5)
  * - Meilisearch: project_facts (docs/plans full-text top 5)
  * - graph/code_chunks: skipped (low context value for todo formatting)
- * Scoring matches index.js rerankMerged() (backend weights + work_memory
- * recency decay). Returns '' if search is unavailable — the process continues
- * without context (to avoid losing the task).
+ * Scoring matches lib/utils.js rerankMerged() (intent-aware backend weights +
+ * work_memory recency decay). Returns '' if search is unavailable — the process
+ * continues without context (to avoid losing the task).
  *
  * @param {string} task - raw textarea text
  * @returns {Promise<string>} context block ('' if no results)
@@ -302,11 +302,23 @@ async function fetchBusinessContext(task) {
                 : Promise.resolve([])
         ]);
 
-        // Same weights as index.js rerankMerged(): project_facts 1.3 / decision_chains 1.1 / work_memory 1.0
+        // Intent-aware weights, kept in sync with lib/utils.js rerankMerged():
+        // decision-style queries (causal/temporal, non-knowledge) rank decision_chains
+        // above planning docs; everything else keeps project_facts 1.3 / decision_chains 1.1.
+        let backendWeights = { project_facts: 1.3, decision_chains: 1.1, work_memory: 1.0 };
+        try {
+            const { extractQueryFeatures } = await import('./lib/utils.js');
+            const features = extractQueryFeatures(task);
+            const isDecisionQuery = Boolean((features.is_causal || features.is_temporal) && !features.is_knowledge);
+            if (isDecisionQuery) {
+                backendWeights = { decision_chains: 1.3, work_memory: 1.2, project_facts: 1.0 };
+            }
+        } catch {
+            // extractQueryFeatures unavailable — fall back to default weights
+        }
         // work_memory recency decay (30-day half-life) — timestamp-less backends (e.g. project_facts) get a neutral 0.5
         const now = Date.now();
         const DAY_MS = 86400000;
-        const backendWeights = { project_facts: 1.3, decision_chains: 1.1, work_memory: 1.0 };
         const merged = [...wmRes, ...dcRes, ...meiliRes]
             .map(r => {
                 let recencyScore = 0.5;

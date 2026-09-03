@@ -15,7 +15,7 @@ import { createWriteStream } from "fs";
 import path from "path";
 import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
-import { extractQueryFeatures, routeQuery, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
+import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7700";
@@ -194,51 +194,6 @@ async function embed(text) {
 }
 
 /**
- * Rerank merged results from multiple collections.
- * Combines cosine score with a recency weight for work_memory entries (§1.4 simplified).
- */
-function rerankMerged(allResults) {
-  const now = Date.now();
-  const DAY_MS = 86400000;
-
-  // Backend-specific weight coefficients — project_facts prioritized over work_memory
-  const backendWeights = {
-    project_facts: 1.3,
-    decision_chains: 1.1,
-    work_memory: 1.0,
-    graph: 1.0,
-    code_structure: 0.9,
-  };
-
-  return allResults
-    .map((r) => {
-      const collection = r._collection || "work_memory";
-      const weight = backendWeights[collection] ?? 1.0;
-
-      let recencyScore = 0.5; // neutral default for project_facts (no timestamp)
-      if (r.payload.timestamp) {
-        const ageDays = (now - new Date(r.payload.timestamp).getTime()) / DAY_MS;
-        // Exponential decay: fresh = 1.0, 30 days old ≈ 0.5, 90 days ≈ 0.25
-        recencyScore = Math.exp(-ageDays / 30);
-      } else if (r.payload.ingested_at) {
-        const ageDays = (now - new Date(r.payload.ingested_at).getTime()) / DAY_MS;
-        recencyScore = Math.exp(-ageDays / 60); // slower decay for docs
-      }
-
-      // Superseded decisions get a hard penalty — outdated but not deleted
-      if (r.payload.status === "superseded") {
-        recencyScore *= 0.15;
-      }
-
-      // α=0.7: cosine score dominates, recency is a tiebreaker
-      const alpha = 0.7;
-      const weightedScore = (r.score ?? 0) * weight;
-      return { ...r, rerank_score: alpha * weightedScore + (1 - alpha) * recencyScore };
-    })
-    .sort((a, b) => b.rerank_score - a.rerank_score);
-}
-
-/**
  * Format a single result based on its collection type.
  */
 function formatResult(r, collection) {
@@ -350,8 +305,10 @@ server.registerTool(
 
     // P6: For knowledge queries, search Meilisearch docs first with expanded limit
     let meiliDocsResults = [];
+    let meiliRan = false; // tracks whether any Meilisearch (docs/plans) search ran this call
     if (isKnowledgeQuery) {
       meiliDocsResults = await searchMeili(query, { source: "docs", limit: Math.max(limit * 3, 10) }).catch(() => []);
+      meiliRan = true;
       log(`[MCP search_memory] knowledge query → docs first, hits=${meiliDocsResults.length}`);
     }
 
@@ -373,14 +330,18 @@ server.registerTool(
 
       // project_facts target → Meilisearch search with explicit collection tag
       if (factsTarget) {
-        const factsSearch = searchMeili(query, { limit: perCollectionLimit }).then(res => 
+        const factsSearch = searchMeili(query, { limit: perCollectionLimit }).then(res =>
           res.map(r => ({ ...r, _collection: "project_facts" }))
         ).catch(() => []);
         searches.push(factsSearch);
-      } else if (!isKnowledgeQuery || meiliDocsResults.length === 0) {
-        // Fallback generic Meilisearch search for docs/plans
+        meiliRan = true;
+      } else if (isKnowledgeQuery && meiliDocsResults.length === 0) {
+        // Knowledge query whose P6 docs search found nothing → retry without source filter.
+        // Non-knowledge routes do NOT get docs mixed in eagerly — the P3 fallback below
+        // retries Meilisearch only when the routed backend returned no results.
         const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
         searches.push(meiliSearch);
+        meiliRan = true;
       }
 
       // P1: Cross-reference code_structure index — find relevant code files in one call
@@ -416,10 +377,13 @@ server.registerTool(
       allResults.push(...graphResults);
     }
 
-    // If multiple backends contributed results, rerank (§1.4)
+    // Rerank whenever 2+ distinct collections contributed — route mode is irrelevant.
+    // (Single-mode routes used to keep insertion order, which let whichever search was
+    // pushed first dominate the top slice and the LLM key findings.)
     // Note: we do NOT slice here — keep expanded raw set for pruning (§2.5)
-    if (allResults.length > 0 && route.mode === "parallel") {
-      allResults = rerankMerged(allResults);
+    const contributingCollections = new Set(allResults.map(r => r._collection));
+    if (allResults.length > 1 && contributingCollections.size > 1) {
+      allResults = rerankMerged(allResults, features);
     }
 
     // ── P3: Fallback chain — if no results, retry backends that weren't targeted ──
@@ -427,17 +391,20 @@ server.registerTool(
       ...vectorTargets.map(t => t),
       graphTarget || null,
       chainTarget || null,
-      factsTarget || null,
-      "meili", // meili always runs with vector targets
+      ...(meiliRan ? ["meili"] : []), // docs/plans already searched this call
       "code_structure", // P1 always runs with vector targets
     ].filter(Boolean));
 
     if (allResults.length === 0 && !chainOutput) {
-      const fallbackTargets = ["work_memory", "project_facts", "code_chunks", "graph"].filter(t => !triedBackends.has(t));
+      const fallbackTargets = ["work_memory", "meili", "code_chunks", "graph"].filter(t => !triedBackends.has(t));
       for (const fb of fallbackTargets) {
         if (fb === "graph") {
           const fbGraph = await searchGraph(query, 5);
           allResults.push(...fbGraph);
+        } else if (fb === "meili") {
+          // project_facts lives in Meilisearch, not Qdrant — qSearch would throw
+          const fbMeili = await searchMeili(query, { limit: 5 }).catch(() => []);
+          allResults.push(...fbMeili);
         } else {
           try {
             const fbVector = await getVector();
@@ -1610,7 +1577,10 @@ async function doSearch(query) {
     vector = await embed(query);
   }
 
-  if (vectorTargets.length > 0 || meiliTarget) {
+  const isKnowledgeQuery = features.is_knowledge ||
+    (features.identifier_ratio < 0.1 && !features.is_causal && !features.is_structural);
+
+  if (vectorTargets.length > 0 || meiliTarget || isKnowledgeQuery) {
     const perCollectionLimit = 10;
 
     const searches = vectorTargets.map(async (col) => {
@@ -1622,9 +1592,14 @@ async function doSearch(query) {
       return results.map((r) => ({ ...r, _collection: col }));
     });
 
-    // Also search Meilisearch for docs/plans text matches
-    const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
-    searches.push(meiliSearch);
+    // Meili docs/plans search: explicit routing target, or a knowledge-style query
+    // (e.g. "docs says X"). A generic query is NOT force-searched here — an empty
+    // vector result falls back to Meili below instead, so planning docs can't
+    // drown out decision records on "what did we decide" queries.
+    if (meiliTarget || isKnowledgeQuery) {
+      const meiliSearch = searchMeili(query, { limit: perCollectionLimit }).catch(() => []);
+      searches.push(meiliSearch);
+    }
 
     const batches = await Promise.all(searches);
     allResults.push(...batches.flat());
@@ -1650,8 +1625,17 @@ async function doSearch(query) {
     }
   }
 
-  if (allResults.length > 0 && route.mode === "parallel") {
-    allResults = rerankMerged(allResults);
+  // Fallback: no vector/graph hits and Meili wasn't targeted → try Meili docs/plans.
+  if (allResults.length === 0 && !meiliTarget && !isKnowledgeQuery) {
+    const fbMeili = await searchMeili(query, { limit: 5 }).catch(() => []);
+    allResults.push(...fbMeili);
+  }
+
+  if (allResults.length > 1) {
+    const contributingCollections = new Set(allResults.map((r) => r._collection));
+    if (contributingCollections.size > 1) {
+      allResults = rerankMerged(allResults, features);
+    }
   }
 
   return { allResults, route };

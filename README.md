@@ -65,7 +65,7 @@ Each session shares source code, work history, upcoming tasks, and live executio
 |---|---|
 | **Ingest** | Docs, plans, and code are chunked (LLM for docs, tree-sitter for JS), embedded with BGE-M3, and upserted to Qdrant. Incremental via mtime/SHA-256 state tracking (`autoIngest.js`, cron-safe). |
 | **Route** | Each query is decomposed into signals (causal, temporal, structural, identifier ratio). A scoring function ranks all backends; the winner executes alone, or a parallel search + rerank fires if the top two scores are within ε=0.15. |
-| **Recall** | The winning backend(s) run the search — vector cosine for work_memory/project_facts/decision_chains, keyword payload scroll for graph. Results merge and rerank with recency decay. |
+| **Recall** | The winning backend(s) run the search — vector cosine for work_memory/project_facts/decision_chains, keyword payload scroll for graph. Results from multiple backends merge and rerank with intent-aware backend weights + recency decay (decision-style queries rank `decision_chains` above planning docs). |
 | **Prune** | A local LLM (SUMMARY_LLM) strips noise from raw top-N results before anything reaches the agent prompt — compresses 10–15 raw hits into core facts. Falls back to raw output if SUMMARY_LLM is unavailable. |
 | **Commit** | New decisions are written into `work_memory` and `decision_chains` as linked nodes (`topic_key`, `reasoning`, `file_paths`). Topic key is auto-inferred via embedding similarity, with LLM classification as fallback. |
 | **Supersede** | When a new decision shares a `topic_key` with an active node, embedding similarity is computed. Single candidate ≥ 0.8 or best-of-many ≥ 0.85 triggers auto-supersede — the old node is marked `superseded` and linked forward. |
@@ -289,7 +289,9 @@ CONTEXT_API_TOKEN=focus-memory-local node index.js &
 ```
 score(backend, query) = 0.5 · similarity + 0.4 · feature_fit + 0.1 · recency_prior
 ```
-The highest-scoring backend wins; if the top two are within ε=0.15, a parallel search with reranking runs instead. Causal keywords ("why", "decision", "changed from") score higher against `decision_chains`.
+The highest-scoring backend wins; if the top two are within ε=0.15, a parallel search runs instead. Causal keywords ("why", "decision", "changed from") score higher against `decision_chains`.
+
+**Reranking** — whenever results come from 2+ backends, they merge and rerank: `cosine × backend_weight × recency`. Weights are intent-aware — for decision-style queries (causal/temporal, non-knowledge) `decision_chains` (1.3) and `work_memory` (1.2) outrank `project_facts` (1.0), so "what did we decide" queries surface decision records above planning docs; all other queries keep `project_facts` at 1.3. Superseded decisions take a ×0.15 penalty.
 
 **Causal decision chains** — every decision written via `remember_decision` becomes a graph node carrying `supersedes` (what it replaced) and `caused_by` (what led to it). `trace_decision_chain` walks both directions, returning the full history with reasoning — architectural archaeology as a graph traversal instead of a chat-log dig. Decisions are dual-written to `work_memory` for backward compatibility; reverse links (`superseded_by`) update automatically.
 
