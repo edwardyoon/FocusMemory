@@ -67,7 +67,8 @@ function main() {
     hookEventName: 'UserPromptSubmit',
     additionalContext:
       `Session state anchor (FocusMemory Σ, as of the end of the previous turn — ` +
-      `prefer it over re-deriving from history):\n${anchor}`,
+      `may be stale; cross-check failing/pending items against current ground truth ` +
+      `before acting on them):\n${anchor}`,
   });
 }
 

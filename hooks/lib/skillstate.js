@@ -339,11 +339,13 @@ function extractTranscriptTail(transcriptPath, budgetChars = 30000) {
 
 /**
  * Build the state-patch extraction prompt. Asks for a JSON patch only —
- * explicitly not a prose summary (the point of SKILL.state). Ends with
- * /no_think: extraction is a mechanical "copy facts into JSON" task, so the
- * Qwen3 thinking pass is pure overhead — disabling it cuts the call's
- * generated tokens and latency without hurting patch quality (fail-open: if
- * the model ignores the token it simply thinks as before, no regression).
+ * explicitly not a prose summary (the point of SKILL.state).
+ * Thinking is handled at the API layer (see callSummaryLLM): the model is
+ * allowed to think, but the reasoning comes back in a separate
+ * `reasoning_content` field that we discard — only the clean JSON `content`
+ * is used. This is more reliable than the in-prompt /no_think token, which
+ * the 27B model intermittently ignored (leaking chain-of-thought into the
+ * JSON and breaking it).
  * @param {object} sigma - current Σ (may be {})
  * @param {string} transcriptText - compact transcript tail
  * @returns {string}
@@ -372,43 +374,36 @@ ${transcriptText}
 
 [Rules]
 - files_touched / decisions / tests_status merge into the current state automatically — list only what is new or changed here.
+- tests_status is a CURRENT-status map: if the current state lists a check as "fail" or "pending" and the recent conversation shows it now passing, you MUST report "<check name>": "pass" to clear the stale entry. A check must never stay "fail" after its fix is verified in the conversation — stale fails poison the next session's anchor.
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value (omit if unchanged from current state).
 - Use only facts present in the conversation. No speculation.
-- Output JSON only. No markdown fences, no commentary.
-/no_think`;
+- Output JSON only. No markdown fences, no commentary.`;
 }
 
 /**
- * Wrap a raw prompt in the Qwen3 chat template.
- * Both configured targets (MAIN_LLM, SUMMARY_LLM) are Qwen3 family and need
- * the chat framing: a raw prompt on /v1/completions makes Qwen3 emit a
- * single EOS token.
- * @param {string} prompt
- * @returns {string}
- */
-function wrapChatTemplate(prompt) {
-  return `user\n${prompt}\n
-</think>
-
-\n
-`;
-}
-
-/**
- * Call the extraction LLM (OpenAI-compatible /v1/completions).
+ * Call the extraction LLM (OpenAI-compatible /v1/chat/completions).
  * Model cascade: MAIN_LLM (shared server LLM, already used by
  * taskReceiver/nudge/ingest) first; the local SUMMARY_LLM is only a
  * portability fallback for machines without MAIN_LLM (it is too slow for
  * this workload).
- * The prompt is wrapped in the Qwen3 chat template (see wrapChatTemplate):
- * raw prompts make the Qwen3 family emit a single EOS token.
+ *
+ * enable_thinking: true — the Qwen3 27B model intermittently ignores the
+ * in-prompt /no_think token and leaks chain-of-thought into the JSON,
+ * breaking it. Enabling thinking at the API level instead routes the
+ * reasoning into a separate `reasoning_content` field; we discard it and
+ * use only the clean JSON in `content`. The configured URL is a
+ * /v1/completions endpoint; the chat endpoint is derived by swapping the
+ * suffix (the same OpenAI-compatible server serves both).
  * @param {string} prompt
  * @param {number} [timeoutMs=120000]
- * @returns {Promise<string>} raw completion text ('' on any failure)
+ * @returns {Promise<string>} the JSON `content` ('' on any failure)
  */
 async function callSummaryLLM(prompt, timeoutMs = 120000) {
-  const url = env('MAIN_LLM', env('SUMMARY_LLM_URL', 'http://127.0.0.1:8081/v1/completions'));
+  const completionsUrl = env('MAIN_LLM', env('SUMMARY_LLM_URL', 'http://127.0.0.1:8081/v1/completions'));
+  const url = /\/chat\/completions$/.test(completionsUrl)
+    ? completionsUrl
+    : completionsUrl.replace(/\/completions$/, '/chat/completions');
   const model = env('MAIN_LLM_MODEL', env('SUMMARY_LLM_MODEL', 'summary-27b'));
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -416,9 +411,17 @@ async function callSummaryLLM(prompt, timeoutMs = 120000) {
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // max_tokens 2048: Qwen3 thinking tokens share the budget with the
-      // JSON output — 1024 risks truncating the patch after a long think.
-      body: JSON.stringify({ model, prompt: wrapChatTemplate(prompt), temperature: 0.1, max_tokens: 2048 }),
+      // max_tokens 16384: thinking tokens share the budget with the JSON
+      // content on these servers; 2048 truncates the patch after a long
+      // think. It is an upper bound, not a target, so a large value does
+      // not slow short responses.
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: prompt }],
+        enable_thinking: true,
+        temperature: 0.1,
+        max_tokens: 16384,
+      }),
       signal: controller.signal,
     });
     if (res.status !== 200) {
@@ -426,7 +429,8 @@ async function callSummaryLLM(prompt, timeoutMs = 120000) {
       return '';
     }
     const data = await res.json();
-    const t = data.choices && data.choices[0] && data.choices[0].text;
+    const m = data.choices && data.choices[0] && data.choices[0].message;
+    const t = m && m.content;
     return typeof t === 'string' ? t : ''; // contract: string, never a Promise/object
   } catch (err) {
     console.error(`[skillstate] LLM error: ${err.name === 'AbortError' ? `timeout (${timeoutMs}ms)` : err.message}`);
@@ -622,7 +626,6 @@ module.exports = {
   checkpointId,
   extractTranscriptTail,
   buildExtractionPrompt,
-  wrapChatTemplate,
   callSummaryLLM,
   extractJsonPatch,
   recordCheckpoint,
