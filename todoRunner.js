@@ -2,7 +2,12 @@
 /**
  * todoRunner.js — Scheduled TODO execution runner (PM2-managed).
  *
- * Runs daily at 23:40.
+ * Runs daily in the early morning (default 06:00, configurable via
+ * TODO_RUN_TIME in FocusMemory/.env) for backlog management. The TODO file
+ * (todos/{date}.md) holds the next day's work plan — organized in the
+ * previous evening — plus any carry-over items. The early-morning run
+ * executes it while the user is away, so results are ready for review when
+ * the work day starts.
  * 1. Target selection: today's TODO file; if it has no pending items (or is
  *    missing), scans the last CATCHUP_LOOKBACK_DAYS for the most recent file
  *    with leftovers, so a failed run is never orphaned by a date rollover.
@@ -11,7 +16,7 @@
  *    headers, logs them, and records the outcome (exit code, duration,
  *    pending before/after, error line) in todo_runner_state.json.
  * 4. Triggers FocusMemory auto-ingest on completion.
- * 5. Optional nightly verification: when NIGHTLY_TEST_SCRIPT is set in
+ * 5. Optional post-run verification: when POSTRUN_TEST_SCRIPT is set in
  *    FocusMemory/.env, the script runs ONCE at the very end of a fully
  *    completed run (all items [x] + clean qwen exit) — never per item.
  *    On a non-zero exit, one qwen fix round is delegated, then the script
@@ -39,7 +44,7 @@ const STATE_FILE = path.join(FOCUSMEMORY_DIR, "todo_runner_state.json");
 // ─── Default instructions (injected into every execution prompt) ───
 
 const DEFAULT_INSTRUCTIONS = `CRITICAL INSTRUCTIONS:
-- Do NOT commit, push, or deploy. All changes will be reviewed by the user next morning.
+- Do NOT commit, push, or deploy. All changes will be reviewed by the user later the same day.
 - Process items sequentially, one at a time. Do NOT use parallel sub-agents.
 - Progress tracking: Handle ONE item at a time. On start, update its \`##\` header checkbox \`[ ]\` → \`[~]\` (in progress). On completion, update to \`[x]\` and add a 1-2 line result summary below the item. If interrupted or partially done, mark \`[!]\` with "last completed step / remaining steps" so the next run can resume exactly where it left off. For large items, update internal checkboxes (Steps) at each stage.
 - Workspace: /opt/homebrew/var/www
@@ -177,7 +182,7 @@ function runProcess(cmd, args, logPath, cwd, env) {
 }
 
 /**
- * Run the optional nightly verification script (NIGHTLY_TEST_SCRIPT in
+ * Run the optional post-run verification script (POSTRUN_TEST_SCRIPT in
  * FocusMemory/.env, absolute or workspace-relative). Invoked exactly once
  * per runTodo cycle — never per item — and only after ALL items completed
  * with a clean qwen exit. On failure, one fix round is delegated to qwen
@@ -187,29 +192,29 @@ function runProcess(cmd, args, logPath, cwd, env) {
  * @param {object} env qwen spawn env (PATH/QWEN_CODE_PROJECT_DIR)
  * @returns {Promise<object|null>} result record, or null when not configured
  */
-async function runNightlyTest(logPath, env) {
-  const script = (process.env.NIGHTLY_TEST_SCRIPT || "").trim();
+async function runPostRunTest(logPath, env) {
+  const script = (process.env.POSTRUN_TEST_SCRIPT || "").trim();
   if (!script) return null;
   const scriptPath = path.isAbsolute(script) ? script : path.resolve(WORKSPACE, script);
   if (!fs.existsSync(scriptPath)) {
-    log(`Nightly test: script not found (${scriptPath}) — skipped.`);
+    log(`Post-run verification: script not found (${scriptPath}) — skipped.`);
     return { configured: true, ran: false, passed: false, fixed: false, reason: "script not found" };
   }
 
   const startedAt = Date.now();
-  log("Nightly test: running verification script...");
+  log("Post-run verification: running script...");
   const firstCode = await runProcess("bash", [scriptPath], logPath, WORKSPACE);
 
   if (firstCode === 0) {
     const durationSec = Math.round((Date.now() - startedAt) / 1000);
-    log(`Nightly test: PASSED (${durationSec}s)`);
+    log(`Post-run verification: PASSED (${durationSec}s)`);
     return { configured: true, ran: true, passed: true, fixed: false, exitCode: 0, durationSec };
   }
 
-  log(`Nightly test: FAILED (exit ${firstCode}) — delegating one fix round to qwen...`);
+  log(`Post-run verification: FAILED (exit ${firstCode}) — delegating one fix round to qwen...`);
   const fixPrompt = `${DEFAULT_INSTRUCTIONS}
 
-The nightly verification script failed after the TODO run completed.
+The post-run verification script failed after the TODO run completed.
 Script: ${scriptPath}
 Its full output is appended to: ${logPath} (see the last "bash ${scriptPath}" section).
 
@@ -217,15 +222,15 @@ Diagnose the failing tests and fix the workspace code (local environment only, 1
 Then re-run the script yourself and confirm it exits 0.
 Do NOT modify the verification script itself unless a test is objectively wrong — if you do, explain why.`;
   const fixCode = await runProcess(QWEN_BIN, ["-p", fixPrompt], logPath, WORKSPACE, env);
-  log(`Nightly test: fix round exited with code ${fixCode} — re-running script to verify...`);
+  log(`Post-run verification: fix round exited with code ${fixCode} — re-running script to verify...`);
   const reCode = await runProcess("bash", [scriptPath], logPath, WORKSPACE);
   const durationSec = Math.round((Date.now() - startedAt) / 1000);
 
   if (reCode === 0) {
-    log(`Nightly test: PASSED after fix round (${durationSec}s)`);
+    log(`Post-run verification: PASSED after fix round (${durationSec}s)`);
     return { configured: true, ran: true, passed: true, fixed: true, exitCode: 0, durationSec };
   }
-  log(`Nightly test: still FAILED after fix round (exit ${reCode}) — leaving for morning review.`);
+  log(`Post-run verification: still FAILED after fix round (exit ${reCode}) — leaving for user review.`);
   return { configured: true, ran: true, passed: false, fixed: true, exitCode: reCode, durationSec };
 }
 
@@ -329,10 +334,10 @@ After each item, update its checkbox and record a 1-2 line summary in the file.`
     );
   }
 
-  // ── Nightly verification (optional): ONCE, only after a fully completed run ──
-  let nightly = null;
+  // ── Post-run verification (optional): ONCE, only after a fully completed run ──
+  let postRun = null;
   if (code === 0 && pendingAfter !== null && pendingAfter.length === 0) {
-    nightly = await runNightlyTest(logPath, qwenEnv);
+    postRun = await runPostRunTest(logPath, qwenEnv);
   }
 
   saveState({
@@ -348,14 +353,34 @@ After each item, update its checkbox and record a 1-2 line summary in the file.`
     remaining:
       pendingAfter === null ? ["<file missing>"] : pendingAfter.map((h) => h.trim()),
     error,
-    nightly,
+    postRun,
   });
 }
 
 // ─── Scheduler ────────────────────────────────────────────────────
 
-const SCHEDULE_HOUR = 23;
-const SCHEDULE_MINUTE = 40;
+const DEFAULT_RUN_TIME = "06:00"; // 24h "HH:MM" — TODO_RUN_TIME 미설정/오류 시 폴백
+
+/**
+ * Daily run time from TODO_RUN_TIME (24h "HH:MM") in FocusMemory/.env.
+ * Unset or invalid values fall back to DEFAULT_RUN_TIME — the runner
+ * must never crash-loop on a bad config value (PM2 would restart it).
+ * @returns {{hour: number, minute: number, source: string}} parsed time
+ *   and where it came from ("TODO_RUN_TIME" | "default")
+ */
+function parseRunTime() {
+  const raw = (process.env.TODO_RUN_TIME || "").trim();
+  const m = raw.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (m) return { hour: Number(m[1]), minute: Number(m[2]), source: "TODO_RUN_TIME" };
+  if (raw) {
+    log(`TODO_RUN_TIME "${raw}" is invalid (expected 24h HH:MM) — using default ${DEFAULT_RUN_TIME}.`);
+  }
+  return { hour: 6, minute: 0, source: "default" };
+}
+
+const RUN_TIME = parseRunTime();
+const SCHEDULE_HOUR = RUN_TIME.hour;
+const SCHEDULE_MINUTE = RUN_TIME.minute;
 
 function nextRunDate() {
   const now = new Date();
@@ -387,6 +412,10 @@ function scheduleNext() {
 log(`todoRunner started (PID ${process.pid})`);
 log(`TODOS_DIR: ${TODOS_DIR}`);
 log(`Log directory: ${LOG_DIR}`);
+log(
+  `Run time: ${String(SCHEDULE_HOUR).padStart(2, "0")}:${String(SCHEDULE_MINUTE).padStart(2, "0")}` +
+    ` (${RUN_TIME.source})`
+);
 
 // Dry run: resolve target + pending items, print, exit (no qwen, no state write)
 if (process.argv.includes("--dry-run")) {

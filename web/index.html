@@ -345,7 +345,7 @@
     <!-- ── autonomous TODO pipeline ─────────────────────────── -->
     <rect class="band-bg" x="20" y="368" width="960" height="158" rx="12" />
     <text class="band-title" x="44" y="392">AUTONOMOUS TODO PIPELINE</text>
-    <text class="band-tag" x="956" y="392" text-anchor="end">PM2 · DAILY 23:40</text>
+    <text class="band-tag" x="956" y="392" text-anchor="end">PM2 · DAILY 06:00</text>
 
     <rect class="node-bg" x="35" y="406" width="170" height="72" rx="8" />
     <text class="band-lbl" x="120" y="430" text-anchor="middle">SCHEDULER</text>
@@ -390,7 +390,7 @@
 
     <!-- daily loop back to the scheduler -->
     <path class="arrow-back" d="M 880,478 L 880,502 L 120,502 L 120,478" />
-    <text class="band-note" x="500" y="516" text-anchor="middle">DAILY LOOP · RESUMES 23:40</text>
+    <text class="band-note" x="500" y="516" text-anchor="middle">DAILY LOOP · RESUMES 06:00</text>
 
     <!-- ── SKILL.state: surviving context compaction ────────────────── -->
     <rect class="band-bg" x="20" y="560" width="960" height="132" rx="12" />
@@ -554,7 +554,7 @@
     <div style="margin-top:48px;padding:32px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
       <span class="section-label" style="display:block;margin-bottom:12px">Autonomous execution</span>
       <p style="color:var(--text-2);font-size:.92rem;line-height:1.7;margin-bottom:16px;max-width:640px">
-        <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--accent)">todoRunner.js</code> (PM2-managed) schedules daily execution at 23:40. It reads <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem">todos/{date}.md</code>, spawns the agent with operational instructions, and triggers index refresh on completion.
+        <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--accent)">todoRunner.js</code> (PM2-managed) schedules the daily backlog run at 06:00. It reads the most recent <code style="font-family:'JetBrains Mono',monospace;font-size:.82rem">todos/{date}.md</code> with pending items (the next day's work plan), spawns the agent with operational instructions, and triggers index refresh on completion.
       </p>
       <div style="font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--text-3);line-height:1.8">
         [ ] → [~] in progress → [x] done &nbsp;|&nbsp; [!] interrupted (resumable)

@@ -189,9 +189,10 @@ curl -X POST http://127.0.0.1:8888/receive \
 ```
 Before formatting, the receiver searches FocusMemory for related context (hard gate), so the generated item is grounded in prior decisions and docs.
 
-**Daily loop:**
+**Daily loop (06:00 — backlog run):**
 ```
-23:40 (PM2 timer) → todoRunner.js looks for today's todos/{date}.md
+06:00 (PM2 timer) → todoRunner.js looks for today's todos/{date}.md
+  (the next day's work plan, organized the previous evening)
   → if none: catch-up scan of the last 3 days for unfinished items ([ ]/[~]/[!])
   → spawns qwen agent to process pending items sequentially
   → checkboxes: [ ] → [~] → [x] / [!]
@@ -199,14 +200,16 @@ Before formatting, the receiver searches FocusMemory for related context (hard g
     logs ERROR with the extracted failure reason when any do
   → on completion: autoIngest.js re-indexes
 ```
-The catch-up scan closes the date-rollover gap: a run that dies just before midnight (crash, agent error) used to orphan the day's file, since the next morning's run only looked at the new date. Now any unfinished item within the lookback window is picked up.
+The look-back scan picks up the most recent file with unfinished items, so a failed run or a plan written into the previous day's file is never orphaned by a date rollover.
+
+The run time is configurable via `TODO_RUN_TIME=HH:MM` (24h) in `FocusMemory/.env`; unset or invalid values fall back to `06:00`. Changes require `pm2 restart todo-runner`.
 
 **Failure tracking:** `todo_runner_state.json` (next to the runner) keeps `consecutiveFailures`, `lastRun`, and a 30-entry run history — a dead agent is visible in the log and state file instead of silently skipping the day. `--dry-run` reports what the next run would pick up without executing anything.
 
-**Default runner instructions:** no commit/push/deploy (user reviews next morning), sequential processing only, checkbox progress tracking, local-environment verification only.
+**Default runner instructions:** no commit/push/deploy (user reviews later the same day), sequential processing only, checkbox progress tracking, local-environment verification only.
 
 ```bash
-pm2 start FocusMemory/todoRunner.js --name todo-runner   # auto-schedules at 23:40
+pm2 start FocusMemory/todoRunner.js --name todo-runner   # auto-schedules at TODO_RUN_TIME (default 06:00)
 node FocusMemory/todoRunner.js --now                       # manual trigger
 node FocusMemory/todoRunner.js --dry-run                   # preview the target file
 ```
