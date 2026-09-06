@@ -14,7 +14,9 @@
  * and responds immediately; a background queue processes tasks serially:
  *   FocusMemory hard gate (business context search)
  *   -> MAIN_LLM (qwen27b) formatting
- *   -> append to the todos file
+ *   -> append to the NEXT day's todos file (the 06:00 backlog run picks
+ *      it up in the early morning; the title suffix keeps the actual
+ *      request date, i.e. today)
  *
  * FocusMemory hard gate:
  * - Before the LLM call it ALWAYS searches the same backends as FocusMemory
@@ -36,8 +38,8 @@
  * - The LLM prompt instructions are ALWAYS English; only the generated
  *   document language follows DOCS_LANGUAGE.
  * - The business-context search query is the user's raw text (never
- *   translated). The /toc day labels (오늘/어제) are panel UI chrome and are
- *   intentionally left in Korean.
+ *   translated). The /toc day labels (어제/오늘/내일) are panel UI chrome and
+ *   are intentionally left in Korean.
  *
  * Todos file convention (shared with the cron-qwen runner, todoRunner.js):
  * - Line 1 of the file: `# MM월 DD일 해야할 일` (KR) / `# To-Do List - MM/DD` (EN)
@@ -61,8 +63,8 @@
  * POST /receive
  *   - Register a task (fire-and-forget). No auth. Rate limit: 10 req/min.
  *   - Request body (JSON): { "task": "<raw task text, max 20000 chars>" }
- *   - Responds IMMEDIATELY with the target file; formatting runs in the
- *     background (may take a few minutes).
+ *   - Responds IMMEDIATELY with the target file (the NEXT day's todos
+ *     file); formatting runs in the background (may take a few minutes).
  *   - 200: { "success": true, "data": { "date": "YYYY-MM-DD",
  *           "file": "YYYY-MM-DD.md", "queued": true } }
  *   - 400 (empty task):  { "success": false, "error": "..." }
@@ -80,11 +82,12 @@
  *       -d '{"task":"add a weekly digest email feature"}'
  *
  * GET  /toc
- *   - Todos TOC for yesterday/today (same shape as the FocusMemory
- *     dashboard /api/todos/toc). No auth.
+ *   - Todos TOC for yesterday/today/tomorrow (same shape as the FocusMemory
+ *     dashboard /api/todos/toc; tomorrow is included because task
+ *     registration targets the next day's file). No auth.
  *   - 200: { "success": true, "data": { "days": [
  *           { "date": "YYYY-MM-DD",
- *             "label": "오늘" | "어제",
+ *             "label": "어제" | "오늘" | "내일",
  *             "total": N, "done": M,
  *             "headers": [ { "status": " " | "x" | "~" | "!",
  *                             "title": "..." }, ... ] }, ... ] } }
@@ -191,6 +194,24 @@ function todayDateParts() {
     const d = String(now.getDate()).padStart(2, '0');
     return {
         ymd: `${now.getFullYear()}-${m}-${d}`,
+        md: `${m}-${d}`,
+        header: DOC_LANG.dateHeader(m, d)
+    };
+}
+
+/**
+ * Compute tomorrow's date parts in the server local timezone (=KST).
+ * Task registration targets the NEXT day's plan file — the 06:00 backlog
+ * run (todoRunner.js) picks it up in the early morning.
+ * @returns {{ymd: string, md: string, header: string}} ymd=YYYY-MM-DD, md=MM-DD, header=date title per DOCS_LANGUAGE
+ */
+function tomorrowDateParts() {
+    const t = new Date();
+    t.setDate(t.getDate() + 1);
+    const m = String(t.getMonth() + 1).padStart(2, '0');
+    const d = String(t.getDate()).padStart(2, '0');
+    return {
+        ymd: `${t.getFullYear()}-${m}-${d}`,
         md: `${m}-${d}`,
         header: DOC_LANG.dateHeader(m, d)
     };
@@ -344,18 +365,18 @@ async function fetchBusinessContext(task) {
  * Build the prompt that asks the LLM to format the raw task into a todos item.
  * The instructions are always English; the OUTPUT language follows DOCS_LANGUAGE.
  * @param {string} rawTask - raw textarea text
- * @param {string|null} existingContent - existing today-file content (style reference)
- * @param {{ymd: string, md: string}} dateParts - today's date
+ * @param {string|null} existingContent - existing next-day file content (style reference)
+ * @param {{ymd: string, md: string}} dateParts - target file date (next day; md = actual request date, today)
  * @param {string} context - FocusMemory hard-gate search context ('' if none)
  * @returns {string} prompt
  */
 function buildFormatPrompt(rawTask, existingContent, dateParts, context) {
     const L = DOC_LANG.labels;
     return `You are an assistant that maintains a daily task todos Markdown file.
-An administrator registered today's task as unstructured text.
+An administrator registered a task for the next day as unstructured text.
 Format it into a **single item** to append to the todos file.
 
-[Existing todos file for today] (filename: ${dateParts.ymd}.md)
+[Existing todos file for the next day] (filename: ${dateParts.ymd}.md)
 ${existingContent ? existingContent : '(new file - no items yet)'}
 
 [Raw text registered by the administrator]
@@ -453,7 +474,7 @@ async function callLLM(prompt) {
 /**
  * Fallback for LLM failure — format the raw text as a todos item as-is.
  * @param {string} rawTask - raw text
- * @param {{md: string}} dateParts - today's date
+ * @param {{md: string}} dateParts - date parts (md = actual request date, today)
  * @returns {string} todos item block
  */
 function buildFallbackItem(rawTask, dateParts) {
@@ -472,13 +493,17 @@ function buildFallbackItem(rawTask, dateParts) {
 // ── fire-and-forget background queue ─────────────────────────────
 
 /**
- * Format the raw task with the LLM, then append it to today's file (background, serial).
- * FocusMemory hard-gate context -> MAIN_LLM -> append.
+ * Format the raw task with the LLM, then append it to the NEXT day's file
+ * (background, serial). FocusMemory hard-gate context -> MAIN_LLM -> append.
  * Even on LLM failure, append the raw-text fallback so no task is lost.
  * @param {string} task - raw text
  */
 async function processTask(task) {
-    const dateParts = todayDateParts();
+    // Tasks are planned for the NEXT day (the 06:00 backlog run), not today.
+    // The title suffix keeps the actual request date (today).
+    const requestParts = todayDateParts();
+    const targetParts = tomorrowDateParts();
+    const dateParts = { ...targetParts, md: requestParts.md };
     const fp = todosFilePath(dateParts.ymd);
 
     let item;
@@ -575,7 +600,8 @@ app.post('/receive', receiverLimiter, (req, res) => {
 
     enqueueTask(task);
 
-    const dateParts = todayDateParts();
+    // Target file = the NEXT day's todos file (matches processTask)
+    const dateParts = tomorrowDateParts();
     res.json({
         success: true,
         data: {
@@ -607,8 +633,10 @@ function parseTodosHeaders(fp) {
 }
 
 /**
- * GET /toc — yesterday/today todos TOC
- * (Same shape as the FocusMemory dashboard /api/todos/toc — Today→오늘/Yesterday→어제 label)
+ * GET /toc — yesterday/today/tomorrow todos TOC
+ * (Same shape as the FocusMemory dashboard /api/todos/toc —
+ *  Yesterday→어제/Today→오늘/Tomorrow→내일 label; tomorrow is included
+ *  because task registration targets the next day's file)
  */
 app.get('/toc', (req, res) => {
     const fmt = (d) =>
@@ -618,16 +646,19 @@ app.get('/toc', (req, res) => {
     const yest = new Date(today);
     yest.setDate(yest.getDate() - 1);
     const yestStr = fmt(yest);
+    const tmrw = new Date(today);
+    tmrw.setDate(tmrw.getDate() + 1);
+    const tmrwStr = fmt(tmrw);
 
     const days = [];
-    for (const dateStr of [yestStr, todayStr]) {
+    for (const dateStr of [yestStr, todayStr, tmrwStr]) {
         const fp = todosFilePath(dateStr);
         if (!fs.existsSync(fp)) continue;
 
         const headers = parseTodosHeaders(fp);
         days.push({
             date: dateStr,
-            label: dateStr === todayStr ? '오늘' : '어제',
+            label: dateStr === todayStr ? '오늘' : dateStr === yestStr ? '어제' : '내일',
             total: headers.length,
             done: headers.filter((h) => h.status === 'x').length,
             headers

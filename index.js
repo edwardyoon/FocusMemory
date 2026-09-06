@@ -1906,9 +1906,14 @@ try {
       const yest = new Date(today);
       yest.setDate(yest.getDate() - 1);
       const yestStr = fmt(yest);
+      const tmrw = new Date(today);
+      tmrw.setDate(tmrw.getDate() + 1);
+      const tmrwStr = fmt(tmrw);
 
+      // Yesterday/Today/Tomorrow — tomorrow is included because task
+      // registration (taskReceiver.cjs) targets the next day's file.
       const days = [];
-      for (const dateStr of [yestStr, todayStr]) {
+      for (const dateStr of [yestStr, todayStr, tmrwStr]) {
         const filePath = `${todosDir}/${dateStr}.md`;
         if (!fsMod.existsSync(filePath)) continue;
         const content = fsMod.readFileSync(filePath, "utf-8");
@@ -1921,7 +1926,7 @@ try {
         }
         days.push({
           date: dateStr,
-          label: dateStr === todayStr ? "Today" : "Yesterday",
+          label: dateStr === todayStr ? "Today" : dateStr === yestStr ? "Yesterday" : "Tomorrow",
           total: headers.length,
           done: headers.filter((h) => h.status === "x").length,
           headers,

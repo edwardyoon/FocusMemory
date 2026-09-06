@@ -180,12 +180,12 @@ Extraction can race the native compaction summary; if native compaction finishes
 
 `todoRunner.js` turns the task-memory pillar into an autonomous execution loop: register tasks, and a PM2-managed process schedules daily execution, reads the day's task file, and spawns the agent with full memory context.
 
-**Register a task** via the standalone task-registration receiver (`taskReceiver.cjs`, Express on port 8888):
+**Register a task** via the standalone task-registration receiver (`taskReceiver.cjs`, Express on port 8888). The item is appended to the **next day's** todos file (the 06:00 backlog run picks it up in the early morning); the title suffix keeps the actual request date:
 ```bash
 curl -X POST http://127.0.0.1:8888/receive \
   -H 'Content-Type: application/json' \
   -d '{"task":"add a weekly digest email feature to the user panel"}'
-# -> { "success": true, "data": { "date": "...", "file": "....md", "queued": true } }
+# -> { "success": true, "data": { "date": "<next day>", "file": "<next day>.md", "queued": true } }
 ```
 Before formatting, the receiver searches FocusMemory for related context (hard gate), so the generated item is grounded in prior decisions and docs.
 
