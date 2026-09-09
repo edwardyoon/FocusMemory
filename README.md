@@ -172,6 +172,8 @@ Internal bookkeeping keys (owned by the hooks, never part of an extraction patch
 
 Extraction can race the native compaction summary; if native compaction finishes first, that round's injection is skipped (fail-open) — Σ still lands for the next compaction and in `work_memory`. Σ files live separately from Hard Gate state (`~/.qwen/tmp/focus-memory/state/`) and are swept by `cleanup-session.js` on `SessionEnd` plus a 7-day stale sweep.
 
+**Observability:** the dashboard (`:8891`) has a dedicated **skill.state** page (sidebar) backed by `GET /api/skillstate` (also on `:3900`) — per-session Σ viewer (the exact injected anchor line, tests pass/fail/pending, full JSON), lifecycle activity counts (Stop checkpoints by trigger, extraction success/failure, anchor injections, post-compact re-injections), and a recent-event timeline. Read-only over the Σ files and the existing gate telemetry JSONL — no extra state, no new write path.
+
 <br>
 
 ---
@@ -242,7 +244,7 @@ npm start
 
 For a full rebuild after schema changes: `npm run auto-ingest --force` (re-ingests all docs/plans and force-reindexes code chunks).
 
-**Dashboard** (auto-launches alongside the MCP server): `http://localhost:8891`, refreshing every 30s. JSON stats at `/api/stats` on both port 8891 and 3900. Override with `DASHBOARD_PORT`.
+**Dashboard** (auto-launches alongside the MCP server): `http://localhost:8891`, refreshing every 30s. Left sidebar with three pages: **통계** (summary bar + Chart.js overview charts — Qdrant/Meilisearch per-collection bar charts, read hard-gate and write-back-gate doughnuts — plus per-backend collection cards and system info), **skill.state** (Σ lifecycle, see Observability above), and **todos** (day TODO TOC from `TODOS_DIR`). Hash-based routing (`#/stats`, `#/skillstate`, `#/todos`) so refresh keeps the current page. Chart.js is vendored locally (`web/chart.umd.min.js`, no CDN). JSON stats at `/api/stats` on both port 8891 and 3900. Override with `DASHBOARD_PORT`.
 
 ### Qwen Code extension install
 
@@ -318,7 +320,7 @@ FocusMemory/
 │   ├── utils.js             # scanFiles, routeQuery, pruneAndSummarize, extractQueryFeatures
 │   └── codesearch/          # Code chunk extraction & indexing
 ├── scripts/                 # createCollection, buildGraph, indexCodeStructure, testSearch
-├── web/                      # Dashboard UI (port 8891)
+├── web/                      # Dashboard UI (port 8891) — dashboard.html + chart.umd.min.js (vendored Chart.js)
 ├── config/                   # launchd cron job
 ├── qwen-extension.json       # Extension manifest (mcpServers + hooks)
 ├── AGENTS.md                 # Hard Gate search protocol (agent context)

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FocusMemory Dashboard</title>
+<script src="chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #0a0a0a;
@@ -28,26 +29,24 @@
     min-height: 100vh;
   }
 
-  .container {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 40px 24px;
-  }
-
-  /* Header */
-  header {
+  /* Sidebar */
+  .sidebar {
+    position: fixed;
+    top: 0; left: 0; bottom: 0;
+    width: 210px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 48px;
-    padding-bottom: 24px;
-    border-bottom: 1px solid var(--border);
+    flex-direction: column;
+    padding: 24px 16px;
+    z-index: 10;
   }
 
   .logo {
     display: flex;
     align-items: center;
     gap: 12px;
+    padding: 0 8px 24px;
   }
 
   .logo-icon {
@@ -61,21 +60,62 @@
     font-weight: 700;
     color: #0a0a0a;
     font-size: 14px;
+    flex-shrink: 0;
   }
 
   .logo h1 {
-    font-size: 20px;
+    font-size: 17px;
     font-weight: 600;
     letter-spacing: -0.02em;
   }
 
+  .nav {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+  }
+
+  .nav-item:hover { background: var(--surface-2); color: var(--text); }
+  .nav-item.active { background: var(--accent-glow); color: var(--accent); }
+
+  .nav-glyph {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: var(--surface-2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  .nav-item.active .nav-glyph { background: var(--accent); color: #0a0a0a; }
+
+  .sidebar-footer { margin-top: auto; padding: 0 4px; }
+
   .status-badge {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 8px;
     padding: 6px 14px;
     border-radius: 99px;
-    background: var(--surface);
+    background: var(--surface-2);
     border: 1px solid var(--border);
     font-size: 13px;
     color: var(--text-dim);
@@ -87,6 +127,7 @@
     border-radius: 50%;
     background: var(--green);
     animation: pulse 2s ease-in-out infinite;
+    flex-shrink: 0;
   }
 
   .status-dot.error {
@@ -97,6 +138,22 @@
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
+  }
+
+  /* Main */
+  .main { margin-left: 210px; }
+
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 40px 32px;
+  }
+
+  .page-title {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin-bottom: 24px;
   }
 
   /* Section */
@@ -216,6 +273,36 @@
     margin-top: 4px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
+  }
+
+  /* Charts */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+    margin-bottom: 48px;
+  }
+
+  .chart-box {
+    position: relative;
+    height: 240px;
+  }
+
+  .chart-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .chart-substat {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 10px;
+    text-align: center;
+    min-height: 16px;
   }
 
   /* System info */
@@ -353,132 +440,352 @@
     text-decoration: line-through;
   }
 
+  /* SKILL.state */
+  .sigma-meta {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-bottom: 10px;
+  }
+
+  .sigma-anchor {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--surface-2);
+    border-left: 3px solid var(--accent);
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 10px;
+    word-break: break-word;
+    color: var(--text);
+  }
+
+  .sigma-chips {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .chip {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 99px;
+    background: var(--surface-2);
+    color: var(--text-dim);
+  }
+
+  .chip.pass { color: var(--green); background: rgba(74, 222, 128, 0.12); }
+  .chip.fail { color: var(--red); background: rgba(248, 113, 113, 0.12); }
+
+  .sigma-json summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+
+  .sigma-json pre {
+    background: var(--surface-2);
+    border-radius: 8px;
+    padding: 12px;
+    font-size: 11px;
+    overflow: auto;
+    max-height: 320px;
+    margin-top: 8px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .sigma-timeline {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+  }
+
+  .sigma-event {
+    display: flex;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  .sigma-event:last-child { border-bottom: none; }
+  .sigma-event-ts { color: var(--text-dim); min-width: 70px; }
+  .sigma-event-sid { color: var(--accent); min-width: 70px; }
+  .sigma-event-name { min-width: 110px; }
+  .sigma-event-detail { color: var(--text-dim); word-break: break-word; }
+
   /* Responsive */
-  @media (max-width: 640px) {
+  @media (max-width: 860px) {
+    .sidebar {
+      position: static;
+      width: 100%;
+      flex-direction: row;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 12px 16px;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+    }
+    .logo { padding: 0 8px 0 0; }
+    .nav { flex-direction: row; flex-wrap: wrap; }
+    .sidebar-footer { margin-top: 0; margin-left: auto; }
+    .main { margin-left: 0; }
     .summary-bar { grid-template-columns: repeat(2, 1fr); }
     .grid { grid-template-columns: 1fr; }
-    header { flex-direction: column; gap: 16px; align-items: flex-start; }
+    .chart-grid { grid-template-columns: 1fr; }
+    .sigma-event { flex-wrap: wrap; }
   }
 </style>
 </head>
 <body>
 
-<div class="container">
-  <header>
-    <div class="logo">
-      <div class="logo-icon">FM</div>
-      <h1>FocusMemory Dashboard</h1>
-    </div>
+<aside class="sidebar">
+  <div class="logo">
+    <div class="logo-icon">FM</div>
+    <h1>FocusMemory</h1>
+  </div>
+  <nav class="nav">
+    <a class="nav-item active" href="#/stats" data-page="stats"><span class="nav-glyph">▦</span>통계</a>
+    <a class="nav-item" href="#/skillstate" data-page="skillstate"><span class="nav-glyph">Σ</span>skill.state</a>
+    <a class="nav-item" href="#/todos" data-page="todos"><span class="nav-glyph">☑</span>todos</a>
+  </nav>
+  <div class="sidebar-footer">
     <div class="status-badge" id="statusBadge">
       <span class="status-dot" id="statusDot"></span>
       <span id="statusText">Connecting...</span>
     </div>
-  </header>
-
-  <div id="errorBox" class="error-box" style="display:none"></div>
-
-  <!-- TODO TOC -->
-  <div class="section-title">Autonomous TODO</div>
-  <div id="todoToc" style="margin-bottom:48px">
-    <div class="loading"><div class="spinner"></div>Loading TODO...</div>
   </div>
+</aside>
 
-  <!-- Summary -->
-  <div class="summary-bar" id="summaryBar">
-    <div class="summary-item">
-      <div class="summary-value" id="totalQdrantPoints">-</div>
-      <div class="summary-label">Total Points</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-value" id="qdrantCollections">-</div>
-      <div class="summary-label">Qdrant Collections</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-value" id="totalMeiliDocs">-</div>
-      <div class="summary-label">Meilisearch Docs</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-value" id="meiliIndexes">-</div>
-      <div class="summary-label">Meili Indexes</div>
-    </div>
-  </div>
+<main class="main">
+  <div class="container">
+    <div id="errorBox" class="error-box" style="display:none"></div>
 
-  <!-- Gate Telemetry -->
-  <div class="section-title">Gate Telemetry</div>
-  <div class="grid" id="gateGrid">
-    <div class="card">
-      <div class="card-header">
-        <span class="card-name">Read Hard Gate</span>
-        <span class="card-tag vector">Memory</span>
-      </div>
-      <div class="card-stats">
-        <div class="stat">
-          <div class="stat-label">Allow</div>
-          <div class="stat-value accent" id="gateMemoryAllow">-</div>
+    <!-- ── Page: 통계 ── -->
+    <section id="pageStats" class="page">
+      <div class="page-title">통계</div>
+
+      <div class="summary-bar" id="summaryBar">
+        <div class="summary-item">
+          <div class="summary-value" id="totalQdrantPoints">-</div>
+          <div class="summary-label">Total Points</div>
         </div>
-        <div class="stat">
-          <div class="stat-label">Deny</div>
-          <div class="stat-value" id="gateMemoryDeny">-</div>
+        <div class="summary-item">
+          <div class="summary-value" id="qdrantCollections">-</div>
+          <div class="summary-label">Qdrant Collections</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-value" id="totalMeiliDocs">-</div>
+          <div class="summary-label">Meilisearch Docs</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-value" id="meiliIndexes">-</div>
+          <div class="summary-label">Meili Indexes</div>
         </div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-header">
-        <span class="card-name">Write-back Gate</span>
-        <span class="card-tag fulltext">Decision</span>
+
+      <div class="section-title">Overview</div>
+      <div class="chart-grid">
+        <div class="card">
+          <div class="card-header">
+            <span class="card-name">Qdrant Points</span>
+            <span class="card-tag vector">Vector</span>
+          </div>
+          <div class="chart-box" id="chartQdrantBox"><canvas id="chartQdrant"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-name">Meilisearch Docs</span>
+            <span class="card-tag fulltext">Full-text</span>
+          </div>
+          <div class="chart-box" id="chartMeiliBox"><canvas id="chartMeili"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-name">Read Hard Gate</span>
+            <span class="card-tag vector">Memory</span>
+          </div>
+          <div class="chart-box" id="chartReadGateBox"><canvas id="chartReadGate"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-name">Write-back Gate</span>
+            <span class="card-tag fulltext">Decision</span>
+          </div>
+          <div class="chart-box" id="chartWriteGateBox"><canvas id="chartWriteGate"></canvas></div>
+          <div class="chart-substat" id="writeGateSubstat"></div>
+        </div>
       </div>
-      <div class="card-stats">
-        <div class="stat">
-          <div class="stat-label">Ask</div>
-          <div class="stat-value accent" id="gateWriteAsk">-</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Allow</div>
-          <div class="stat-value" id="gateWriteAllow">-</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Skip</div>
-          <div class="stat-value" id="gateWriteSkip">-</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">User Yes</div>
-          <div class="stat-value accent" id="gateUserYes">-</div>
+
+      <div class="section-title">Qdrant Collections</div>
+      <div class="grid" id="qdrantGrid">
+        <div class="loading"><div class="spinner"></div>Loading collections...</div>
+      </div>
+
+      <div class="section-title">Meilisearch Indexes</div>
+      <div class="grid" id="meiliGrid">
+        <div class="loading"><div class="spinner"></div>Loading indexes...</div>
+      </div>
+
+      <div class="section-title">System Info</div>
+      <div class="system-info">
+        <div class="info-grid" id="systemInfo">
+          <div class="loading"><div class="spinner"></div></div>
         </div>
       </div>
-    </div>
-  </div>
+    </section>
 
-  <!-- Qdrant Collections -->
-  <div class="section-title">Qdrant Collections</div>
-  <div class="grid" id="qdrantGrid">
-    <div class="loading"><div class="spinner"></div>Loading collections...</div>
-  </div>
+    <!-- ── Page: skill.state ── -->
+    <section id="pageSkillstate" class="page" style="display:none">
+      <div class="page-title">skill.state (Σ)</div>
+      <div id="skillStateWrap">
+        <div class="loading"><div class="spinner"></div>Loading SKILL.state...</div>
+      </div>
+    </section>
 
-  <!-- Meilisearch Indexes -->
-  <div class="section-title">Meilisearch Indexes</div>
-  <div class="grid" id="meiliGrid">
-    <div class="loading"><div class="spinner"></div>Loading indexes...</div>
+    <!-- ── Page: todos ── -->
+    <section id="pageTodos" class="page" style="display:none">
+      <div class="page-title">todos</div>
+      <div id="todoToc">
+        <div class="loading"><div class="spinner"></div>Loading TODO...</div>
+      </div>
+    </section>
   </div>
-
-  <!-- System Info -->
-  <div class="section-title">System Info</div>
-  <div class="system-info">
-    <div class="info-grid" id="systemInfo">
-      <div class="loading"><div class="spinner"></div></div>
-    </div>
-  </div>
-</div>
+</main>
 
 <script>
 const API_BASE = ''; // same origin, served by index.js
 
+// ── Page routing (hash-based so refresh keeps the current page) ──
+const PAGES = ['stats', 'skillstate', 'todos'];
+
+function pageFromHash() {
+  const h = location.hash.replace(/^#\/?/, '');
+  return PAGES.includes(h) ? h : 'stats';
+}
+
+function showPage(name) {
+  for (const p of PAGES) {
+    const id = 'page' + p[0].toUpperCase() + p.slice(1);
+    document.getElementById(id).style.display = (p === name) ? '' : 'none';
+  }
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === name));
+  // Charts in a hidden container have zero size — re-measure when visible again.
+  if (name === 'stats') Object.values(charts).forEach(c => c.resize());
+}
+
+window.addEventListener('hashchange', () => showPage(pageFromHash()));
+
+// ── Charts (Chart.js, local web/chart.umd.min.js) ──
+const charts = {};
+const CH = { accent: '#ff6b25', green: '#4ade80', red: '#f87171', dim: '#888', grid: '#2a2a2a', text: '#e8e8e8', skip: '#3a3a3a' };
+
+function barOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { ticks: { color: CH.dim }, grid: { display: false } },
+      y: { beginAtZero: true, ticks: { color: CH.dim }, grid: { color: CH.grid } },
+    },
+  };
+}
+
+function doughnutOptions() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '62%',
+    plugins: { legend: { position: 'bottom', labels: { color: CH.text, boxWidth: 12, padding: 12 } } },
+  };
+}
+
+// Swap the chart box to a "No data" placeholder (or back to a canvas).
+function prepareBox(boxId, canvasId, isEmpty) {
+  const box = document.getElementById(boxId);
+  if (isEmpty) {
+    if (charts[canvasId]) { charts[canvasId].destroy(); delete charts[canvasId]; }
+    box.innerHTML = '<div class="chart-empty">No data</div>';
+    return false;
+  }
+  if (!box.querySelector('canvas')) box.innerHTML = '<canvas id="' + canvasId + '"></canvas>';
+  return true;
+}
+
+// Create the chart once; later refreshes update data in place (no flicker).
+function makeChart(canvasId, type, data, options) {
+  if (typeof Chart === 'undefined') return;
+  const existing = charts[canvasId];
+  if (existing) {
+    existing.data = data;
+    existing.update('none');
+    return;
+  }
+  charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
+}
+
+function renderCharts(stats, gate) {
+  const qd = Object.entries((stats.qdrant && stats.qdrant.collections) || {});
+  const qdVals = qd.map(([, i]) => i.count || 0);
+  if (prepareBox('chartQdrantBox', 'chartQdrant', !qd.length || qdVals.every(v => !v))) {
+    makeChart('chartQdrant', 'bar', {
+      labels: qd.map(([n]) => n),
+      datasets: [{ data: qdVals, backgroundColor: CH.accent, borderRadius: 4 }],
+    }, barOptions());
+  }
+
+  const mi = Object.entries((stats.meilisearch && stats.meilisearch.indexes) || {});
+  const miVals = mi.map(([, i]) => i.documentCount || 0);
+  if (prepareBox('chartMeiliBox', 'chartMeili', !mi.length || miVals.every(v => !v))) {
+    makeChart('chartMeili', 'bar', {
+      labels: mi.map(([n]) => n),
+      datasets: [{ data: miVals, backgroundColor: CH.green, borderRadius: 4 }],
+    }, barOptions());
+  }
+
+  const allow = (gate.memoryGate && gate.memoryGate.allow) || 0;
+  const deny = (gate.memoryGate && gate.memoryGate.deny) || 0;
+  if (prepareBox('chartReadGateBox', 'chartReadGate', !allow && !deny)) {
+    makeChart('chartReadGate', 'doughnut', {
+      labels: ['Allow', 'Deny'],
+      datasets: [{ data: [allow, deny], backgroundColor: [CH.green, CH.red], borderWidth: 0 }],
+    }, doughnutOptions());
+  }
+
+  const ask = (gate.writeBackGate && gate.writeBackGate.ask) || 0;
+  const wAllow = (gate.writeBackGate && gate.writeBackGate.allow) || 0;
+  const skip = (gate.writeBackGate && gate.writeBackGate.skip) || 0;
+  if (prepareBox('chartWriteGateBox', 'chartWriteGate', !ask && !wAllow && !skip)) {
+    makeChart('chartWriteGate', 'doughnut', {
+      labels: ['Ask', 'Allow', 'Skip'],
+      datasets: [{ data: [ask, wAllow, skip], backgroundColor: [CH.accent, CH.green, CH.skip], borderWidth: 0 }],
+    }, doughnutOptions());
+  }
+
+  const yes = (gate.userResponses && gate.userResponses.yes) || 0;
+  const no = (gate.userResponses && gate.userResponses.no) || 0;
+  document.getElementById('writeGateSubstat').textContent = (yes || no) ? `user responses — yes ${yes} · no ${no}` : '';
+}
+
+// ── Data fetch + render ──
 async function fetchStats() {
   const errors = [];
 
   try {
-    const res = await fetch(API_BASE + '/api/stats');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const [statsRes, gateRes] = await Promise.all([
+      fetch(API_BASE + '/api/stats'),
+      fetch(API_BASE + '/api/gate-stats').catch(() => null),
+    ]);
+    if (!statsRes.ok) throw new Error(`HTTP ${statsRes.status}`);
+    const data = await statsRes.json();
 
     // Status badge
     document.getElementById('statusDot').className = 'status-dot';
@@ -489,27 +796,28 @@ async function fetchStats() {
     renderMeili(data.meilisearch || {});
     renderSystemInfo(data.system || {});
 
-    // TODO TOC
-    try {
-      const todoRes = await fetch(API_BASE + '/api/todos/toc');
-      if (todoRes.ok) {
-        const todoData = await todoRes.json();
-        renderTodoToc(todoData);
-      }
-    } catch {}
-
-    // Gate telemetry
-    try {
-      const gateRes = await fetch(API_BASE + '/api/gate-stats');
-      if (gateRes.ok) {
-        const gateData = await gateRes.json();
-        renderGate(gateData);
-      }
-    } catch {}
+    const gateData = gateRes && gateRes.ok ? await gateRes.json() : null;
+    renderCharts(data, gateData || {});
   } catch (err) {
     errors.push(err.message);
     showError(errors.join('; '));
   }
+
+  // TODO TOC
+  try {
+    const todoRes = await fetch(API_BASE + '/api/todos/toc');
+    if (todoRes.ok) {
+      renderTodoToc(await todoRes.json());
+    }
+  } catch {}
+
+  // SKILL.state
+  try {
+    const ssRes = await fetch(API_BASE + '/api/skillstate');
+    if (ssRes.ok) {
+      renderSkillState(await ssRes.json());
+    }
+  } catch {}
 
   return { errors };
 }
@@ -625,13 +933,131 @@ function renderSystemInfo(sys) {
   `).join('');
 }
 
-function renderGate(data) {
-  document.getElementById('gateMemoryAllow').textContent = formatNum(data.memoryGate?.allow || 0);
-  document.getElementById('gateMemoryDeny').textContent = formatNum(data.memoryGate?.deny || 0);
-  document.getElementById('gateWriteAsk').textContent = formatNum(data.writeBackGate?.ask || 0);
-  document.getElementById('gateWriteAllow').textContent = formatNum(data.writeBackGate?.allow || 0);
-  document.getElementById('gateWriteSkip').textContent = formatNum(data.writeBackGate?.skip || 0);
-  document.getElementById('gateUserYes').textContent = formatNum(data.userResponses?.yes || 0);
+function renderSkillState(data) {
+  const el = document.getElementById('skillStateWrap');
+  if (!data || !data.enabled) {
+    el.innerHTML = '<div class="todo-day" style="color:var(--text-dim);font-size:13px">SKILL.state disabled (FOCUSMEMORY_SKILLSTATE != on)</div>';
+    return;
+  }
+
+  const a = data.activity || {};
+  const ck = a.checkpoints || {};
+  const sessions = data.sessions || [];
+  const lastTs = a.last_event_ts ? new Date(a.last_event_ts).toLocaleString() : '-';
+  const redIf = (n) => (n ? ' style="color:var(--red)"' : '');
+
+  let html = `
+  <div class="grid" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">Checkpoints (Stop)</span>
+        <span class="card-tag vector">Σ</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">State-change</div>
+          <div class="stat-value accent">${ck['state-change'] || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Context-growth</div>
+          <div class="stat-value">${ck['context-growth'] || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">No Trigger</div>
+          <div class="stat-value">${ck.no_trigger || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Last Event</div>
+          <div class="stat-value" style="font-size:13px">${esc(lastTs)}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">Extraction (LLM)</span>
+        <span class="card-tag vector">Σ</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Extracted</div>
+          <div class="stat-value accent">${a.extracted || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Failed</div>
+          <div class="stat-value"${redIf(a.extract_failed)}>${a.extract_failed || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Worker Errors</div>
+          <div class="stat-value"${redIf(a.worker_error)}>${a.worker_error || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Re-injected</div>
+          <div class="stat-value">${a.reinjected || 0}</div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name">Anchor Injection</span>
+        <span class="card-tag fulltext">Per-turn</span>
+      </div>
+      <div class="card-stats">
+        <div class="stat">
+          <div class="stat-label">Anchors Injected</div>
+          <div class="stat-value accent">${a.anchor_injected || 0}</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Active Sessions</div>
+          <div class="stat-value">${sessions.length}</div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  if (sessions.length) {
+    html += '<div class="grid" style="margin-bottom:16px">' + sessions.map(s => {
+      const t = s.tests || { pass: 0, fail: 0, pending: 0 };
+      const updated = s.updated_at ? new Date(s.updated_at).toLocaleString() : '-';
+      const tokens = s.last_input_tokens ? Math.round(s.last_input_tokens / 1000) + 'k tokens' : '-';
+      return `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-name" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px">${esc(s.session_id.slice(0, 8))}</span>
+        <span class="card-tag vector">Σ</span>
+      </div>
+      <div class="sigma-meta">
+        <span>${esc(updated)}</span>
+        <span>${esc(tokens)}</span>
+        <span>compacts: ${s.compact_count || 0}</span>
+      </div>
+      ${s.anchor ? `<div class="sigma-anchor">${esc(s.anchor)}</div>` : ''}
+      <div class="sigma-chips">
+        <span class="chip pass">✓ pass ${t.pass}</span>
+        <span class="chip${t.fail ? ' fail' : ''}">✗ fail ${t.fail}</span>
+        <span class="chip">… pending ${t.pending}</span>
+      </div>
+      <details class="sigma-json">
+        <summary>Full Σ JSON</summary>
+        <pre>${esc(JSON.stringify(s.sigma, null, 2))}</pre>
+      </details>
+    </div>`;
+    }).join('') + '</div>';
+  } else {
+    html += '<div class="todo-day" style="color:var(--text-dim);font-size:13px;margin-bottom:16px">No Σ files yet (state/ dir empty)</div>';
+  }
+
+  const events = data.recentEvents || [];
+  if (events.length) {
+    html += '<div class="sigma-timeline">' + events.map(e => `
+    <div class="sigma-event">
+      <span class="sigma-event-ts">${new Date(e.ts).toLocaleTimeString()}</span>
+      <span class="sigma-event-sid">${esc(e.session)}</span>
+      <span class="sigma-event-name">${esc(e.event)}</span>
+      <span class="sigma-event-detail">${esc(e.detail)}</span>
+    </div>`).join('') + '</div>';
+  }
+
+  el.innerHTML = html;
 }
 
 function renderTodoToc(data) {
@@ -673,6 +1099,7 @@ function esc(s) {
 }
 
 // Initial load + auto-refresh every 30s
+showPage(pageFromHash());
 fetchStats();
 setInterval(fetchStats, 30_000);
 </script>

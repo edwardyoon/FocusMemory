@@ -15,6 +15,7 @@ import { createWriteStream } from "fs";
 import path from "path";
 import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
+import skillState from "./hooks/lib/skillstate.js";
 import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
@@ -1873,6 +1874,117 @@ httpApp.get("/api/gate-stats", async (c) => {
   }
 });
 
+// ─── Dashboard API: /api/skillstate (SKILL.state Σ viewer) ───
+
+const SKILLSTATE_TELEMETRY_HOOKS = new Set([
+  "stop-checkpoint-state",
+  "precompact-extract-state",
+  "userprompt-inject-state",
+  "sessionstart-inject-state",
+]);
+
+/** Shared: read SKILL.state Σ files (state/ dir) + aggregate skillstate telemetry */
+async function readSkillStateStats() {
+  const home = process.env.HOME || process.env.USERPROFILE || ".";
+  const telemetryPath = path.join(home, ".qwen", "tmp", "focus-memory", "gate-telemetry.jsonl");
+
+  // Σ sessions — mtime desc, capped at 10 so the payload stays dashboard-sized
+  const sessions = [];
+  try {
+    const entries = await fs.readdir(skillState.SIGMA_DIR, { withFileTypes: true });
+    const files = entries
+      .filter((e) => e.isFile() && e.name.endsWith(".json"))
+      .map(async (e) => {
+        const file = path.join(skillState.SIGMA_DIR, e.name);
+        const st = await fs.stat(file).catch(() => null);
+        let sigma = {};
+        try { sigma = JSON.parse(await fs.readFile(file, "utf-8")); } catch {}
+        const tests = { pass: 0, fail: 0, pending: 0 };
+        if (sigma.tests_status && typeof sigma.tests_status === "object" && !Array.isArray(sigma.tests_status)) {
+          for (const v of Object.values(sigma.tests_status)) {
+            if (v === "pass") tests.pass++;
+            else if (v === "fail") tests.fail++;
+            else tests.pending++;
+          }
+        }
+        return {
+          session_id: sigma.session_id || e.name.replace(/\.json$/, ""),
+          updated_at: sigma.updated_at || null,
+          mtime: st ? st.mtimeMs : 0,
+          last_input_tokens: Number(sigma.last_input_tokens) || 0,
+          compact_count: Number(sigma.compact_count) || 0,
+          anchor: skillState.renderAnchor(sigma),
+          tests,
+          sigma,
+        };
+      });
+    const results = await Promise.all(files);
+    results.sort((a, b) => b.mtime - a.mtime);
+    for (const s of results.slice(0, 10)) sessions.push(s);
+  } catch {}
+
+  // Telemetry — same JSONL as gate-stats, filtered to the skillstate hooks
+  const activity = {
+    checkpoints: { "state-change": 0, "context-growth": 0, no_trigger: 0 },
+    extracted: 0,
+    extract_failed: 0,
+    worker_error: 0,
+    anchor_injected: 0,
+    reinjected: 0,
+    last_event_ts: null,
+  };
+  const recentEvents = [];
+  try {
+    if (await fs.access(telemetryPath).then(() => true).catch(() => false)) {
+      const lines = (await fs.readFile(telemetryPath, "utf-8")).trim().split("\n").filter(Boolean);
+      for (const line of lines) {
+        let e;
+        try { e = JSON.parse(line); } catch { continue; }
+        if (!SKILLSTATE_TELEMETRY_HOOKS.has(e.hook)) continue;
+        if (!activity.last_event_ts || e.ts > activity.last_event_ts) activity.last_event_ts = e.ts;
+        if (e.hook === "stop-checkpoint-state") {
+          if (e.event === "checkpoint") {
+            activity.checkpoints[e.trigger === "context-growth" ? "context-growth" : "state-change"]++;
+          } else if (e.event === "no_trigger") {
+            activity.checkpoints.no_trigger++;
+          }
+        } else if (e.hook === "precompact-extract-state") {
+          if (e.event === "extracted") activity.extracted++;
+          else if (e.event === "extract_failed") activity.extract_failed++;
+          else if (e.event === "worker_error") activity.worker_error++;
+        } else if (e.hook === "userprompt-inject-state") {
+          if (e.event === "anchor_injected") activity.anchor_injected++;
+        } else if (e.hook === "sessionstart-inject-state") {
+          if (e.event === "injected") activity.reinjected++;
+        }
+        const kTokens = Math.round((e.input_tokens || 0) / 1000);
+        const detail =
+          e.hook === "stop-checkpoint-state"
+            ? `${e.event === "checkpoint" ? `trigger=${e.trigger}` : ""}${e.input_tokens ? `, ${kTokens}k tokens` : ""}`.replace(/^, /, "")
+            : e.hook === "precompact-extract-state"
+              ? e.event === "extracted"
+                ? `trigger=${e.trigger}, keys=${(e.keys || []).length}`
+                : e.error || e.trigger || ""
+              : e.hook === "sessionstart-inject-state"
+                ? `compact_count=${e.compact_count}`
+                : e.input_tokens ? `${kTokens}k tokens` : "";
+        recentEvents.push({ ts: e.ts, session: e.session_id ? String(e.session_id).slice(0, 8) : "", event: e.event, detail });
+      }
+    }
+  } catch {}
+  recentEvents.sort((a, b) => b.ts - a.ts);
+
+  return { enabled: skillState.skillStateEnabled(), sessions, activity, recentEvents: recentEvents.slice(0, 20) };
+}
+
+httpApp.get("/api/skillstate", async (c) => {
+  try {
+    return c.json(await readSkillStateStats());
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
 // ─── Dashboard UI: serve on port 8891 ───
 
 const dashboardPort = parseInt(process.env.DASHBOARD_PORT || "8891", 10);
@@ -1882,6 +1994,10 @@ try {
 
   const dashApp = new Hono();
   dashApp.get("/", (c) => c.html(dashboardHtml));
+  dashApp.get("/chart.umd.min.js", (c) => {
+    const body = fsSync.default.readFileSync(__dirname + "/web/chart.umd.min.js", "utf-8");
+    return c.body(body, 200, { "Content-Type": "application/javascript; charset=utf-8" });
+  });
   dashApp.get("/api/stats", async (cD) => {
     const stats = await collectDashboardStats();
     return cD.json(stats);
@@ -1889,6 +2005,13 @@ try {
   dashApp.get("/api/gate-stats", async (cD) => {
     try {
       return cD.json(await readGateStats());
+    } catch (err) {
+      return cD.json({ error: err.message }, 500);
+    }
+  });
+  dashApp.get("/api/skillstate", async (cD) => {
+    try {
+      return cD.json(await readSkillStateStats());
     } catch (err) {
       return cD.json({ error: err.message }, 500);
     }
