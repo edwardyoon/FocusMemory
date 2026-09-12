@@ -2,15 +2,20 @@
 // UserPromptSubmit hook — SKILL.state per-turn state anchor injection.
 //
 // When the session's context has grown past a threshold (default 50k input
-// tokens, as recorded by the Stop hook in Σ.last_input_tokens), injects a
-// compact one-line "where are we" anchor rendered from the on-disk Σ —
-// no LLM call, millisecond-scale, fail-open.
+// tokens, as recorded by the Stop hook in Σ.last_input_tokens) — or the
+// session is in a post-compaction window (Σ.compact_count > 0 while the
+// context has not yet regrown past the threshold) — injects a compact
+// one-line "where are we" anchor rendered from the on-disk Σ — no LLM call,
+// millisecond-scale, fail-open.
 //
 // Why: lost-in-the-middle dilution in long live sessions. The model re-
 // derives "what am I doing" from an ever-growing transcript; a fresh
 // explicit-state reminder each turn keeps the current task/step/pending
 // checks salient without re-injecting the full Σ (that would cost real
-// tokens every turn).
+// tokens every turn). The post-compaction window matters too: right after
+// a compaction the context is small (so the threshold alone would stop
+// anchoring) but the lossy native prose summary is the only "where are we"
+// source until the context regrows.
 //
 // If the previous turn's extraction worker is still running, the anchor is
 // one turn stale — harmless: the live tail of the transcript contains
@@ -50,7 +55,13 @@ function main() {
   if (!sigma || Object.keys(sigma).length === 0) return; // no Σ yet — nothing to anchor
 
   const tokens = Number(sigma.last_input_tokens) || 0;
-  if (tokens < MIN_INJECT_TOKENS) return; // short context — nothing to anchor
+  const compactCount = Number(sigma.compact_count) || 0;
+  // Below the threshold, only the post-compaction window qualifies: after a
+  // compaction the context shrank and the lossy native prose summary is the
+  // only "where are we" source, so keep anchoring until the context regrows
+  // past the threshold. Context only shrinks via compaction, so once it
+  // regrows the plain threshold rule resumes on its own.
+  if (tokens < MIN_INJECT_TOKENS && compactCount === 0) return;
 
   const anchor = ss.renderAnchor(sigma);
   if (!anchor) return; // Σ exists but has no renderable content
@@ -61,6 +72,7 @@ function main() {
     hook: 'userprompt-inject-state',
     event: 'anchor_injected',
     input_tokens: tokens,
+    post_compact: tokens < MIN_INJECT_TOKENS,
   });
 
   ss.emitHookOutput({

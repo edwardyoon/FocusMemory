@@ -29,7 +29,7 @@ Beyond retrieval, FocusMemory maintains **structured execution state (Σ) contin
 
 `turn: edit → Σ₁ · turn: question → (skip) · 50k growth → Σ₂ · turn: edit → Σ₃ → PreCompact → Σ_final`
 
-While the session runs, a `UserPromptSubmit` hook injects a compact one-line state anchor each turn once the context has grown large enough, so the model keeps conditioning on explicit state instead of re-deriving it from an ever-growing transcript.
+While the session runs, a `UserPromptSubmit` hook injects a compact one-line state anchor each turn once the context has grown large enough — and again right after a compaction, until the context regrows — so the model keeps conditioning on explicit state instead of re-deriving it from an ever-growing transcript (or a lossy prose summary).
 
 If the session crashes or the final extraction loses the race with native compaction, the most recent checkpoint can still be restored at `SessionStart`. The amount of uncompacted execution state that can be lost is therefore bounded by the time since the last state-changing turn, not the entire context window.
 
@@ -141,7 +141,8 @@ FOCUSMEMORY_SKILLSTATE=on
 # FOCUSMEMORY_SKILLSTATE_MAX_CHARS=30000
 # optional, default 50000 — context growth (tokens) that triggers the Stop fallback
 # FOCUSMEMORY_SKILLSTATE_CHECKPOINT_INTERVAL=50000
-# optional, default 50000 — context size (tokens) at which the per-turn anchor is injected
+# optional, default 50000 — context size (tokens) at which the per-turn anchor is injected;
+# after a compaction the anchor is injected from compaction until the context regrows past this
 # FOCUSMEMORY_SKILLSTATE_INJECT_MIN_TOKENS=50000
 ```
 Off by default — with the flag unset, all hooks return immediately (25–40 ms, zero output); auto-recall and the Hard Gate are untouched.
@@ -152,7 +153,7 @@ Off by default — with the flag unset, all hooks return immediately (25–40 ms
   - **state change** (primary) — a mutating tool call (`edit` / `write_file` / `remember_decision`) was logged since the last extraction. Mechanical detection from the tool-call log, no LLM in the hook itself — prose-only turns pay no extraction cost.
   - **context growth** (fallback) — input tokens grew 50k+ past the last extraction, covering semantic drift that touches no file (decisions made in prose only).
 - **PreCompact** spawns the same worker as a final pass and exits in milliseconds — native compaction is never blocked. The worker reads the transcript tail (default 30k chars), calls the extraction LLM (MAIN_LLM → SUMMARY_LLM fallback) for a JSON state patch, merges it into Σ (`Σ_{t+1} = Σ_t ⊕ Δ`; null deletes a key), saves it, and dual-writes a `work_memory` checkpoint under a stable per-session point ID — one upserted point, not one per extraction.
-- **UserPromptSubmit (every turn)** — once the recorded context size passes the threshold (default 50k input tokens), injects a compact one-line state anchor rendered from Σ (`task | step | pending | files | failing checks`) as `additionalContext`. No LLM call, millisecond-scale — counters lost-in-the-middle dilution in long live sessions. If the previous turn's worker is still running, the anchor is one turn stale; harmless, since the live tail of the transcript covers everything since.
+- **UserPromptSubmit (every turn)** — once the recorded context size passes the threshold (default 50k input tokens), injects a compact one-line state anchor rendered from Σ (`task | step | pending | files | failing checks`) as `additionalContext`. No LLM call, millisecond-scale — counters lost-in-the-middle dilution in long live sessions. The anchor also covers the post-compaction window: after a compaction the recorded size drops below the threshold, and injection continues until the context regrows past it — exactly the window where the lossy native prose summary is the only "where are we" source. (Context only shrinks via compaction, so once it regrows the plain threshold rule resumes on its own.) If the previous turn's worker is still running, the anchor is one turn stale; harmless, since the live tail of the transcript covers everything since.
 - **SessionStart** (`compact` only) loads Σ and injects it as `additionalContext`, preferred over the native prose summary for "where are we" questions.
 
 **Σ schema:**
