@@ -1693,10 +1693,11 @@ httpApp.post("/v1/context/search", async (c) => {
     return c.json({ hookEventName: "UserPromptSubmit", additionalContext: "" });
   }
 
-  // SUMMARY_LLM prune & summarize (graceful fallback)
+  // Fast keyword summary only — this hook blocks prompt submission with an 8s budget,
+  // so the LLM path (10~30s) is reserved for the interactive search_memory MCP tool
   let prunedSummary = null;
   try {
-    prunedSummary = await pruneAndSummarize(query, allResults);
+    prunedSummary = await pruneAndSummarize(query, allResults, { useLLM: false });
   } catch (err) {
     log(`[Hook /v1/context/search] prune failed: ${err.message}`);
   }
