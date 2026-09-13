@@ -221,6 +221,36 @@ node FocusMemory/todoRunner.js --dry-run                   # preview the target 
 
 ---
 
+## Garbage collection
+
+Most of the system is self-cleaning: session state files are swept by `cleanup-session.js` (7-day), the gate telemetry JSONL is size-bounded, and every indexer (autoIngest, buildGraph, indexCodeStructure, indexCodeChunks) drops entries for files deleted from disk. Two accumulators are unbounded by design and need time-based retention — `garbageCollect.js` (daily via `config/com.focusmemory.gc.plist`):
+
+| Target | Rule | Why safe |
+|---|---|---|
+| `todos/YYYY-MM-DD.md` | older than `GC_TODOS_RETENTION_DAYS` → **moved** to `GC_ARCHIVE_DIR/YYYY-MM/` | todos/ is not under version control, so the move keeps it reversible; the archive dir is outside `TODOS_DIR` so autoIngest never re-indexes it, and its deleted-file detection drops the Meilisearch doc. todoRunner only scans the last 3 days. |
+| `work_memory` `type=state_checkpoint` | `timestamp` older than `GC_CHECKPOINT_RETENTION_DAYS` → deleted by explicit ID list | one upserted point per session (`checkpointId`); the Σ file on disk is already swept at 7 days, and no recovery path reads checkpoints older than a session's lifetime. |
+
+**Whitelist by construction — never age-pruned:** `decision`/`bug_resolved`/`todo` points and `decision_chains` (causal-chain integrity; `trace_decision_chain` walks `supersedes`/`superseded_by` links, so dropping a node severs the chain — recency decay in reranking already downranks old decisions), and the code index (freshness is managed by file-existence sync, not age).
+
+```
+# FocusMemory/.env
+GC_ENABLED=on
+GC_TODOS_RETENTION_DAYS=30
+GC_CHECKPOINT_RETENTION_DAYS=30
+GC_ARCHIVE_DIR={your_workspace}/todos_archive
+```
+
+```bash
+node garbageCollect.js            # live run (requires GC_ENABLED=on)
+node garbageCollect.js --dry-run  # report only
+```
+
+Every run appends one summary line to `logs/gc.log`. A lock file prevents overlap with a concurrent run (same pattern as autoIngest).
+
+<br>
+
+---
+
 ## Quick start
 
 ```bash
@@ -314,15 +344,16 @@ FocusMemory/
 ├── index.js                # MCP stdio + Hono HTTP — 8 tools, /v1/context/search
 ├── init.js                 # Workspace initializer
 ├── autoIngest.js           # Incremental doc/plan/todo ingest + code chunk reindex
+├── garbageCollect.js       # Time-based retention (todos archive + state_checkpoint prune)
 ├── todoRunner.js           # Autonomous TODO execution runner
 ├── taskReceiver.cjs        # Task registration HTTP receiver (port 8888)
 ├── meilisearch.js          # MeiliSearch indexer for docs/plans
 ├── lib/
 │   ├── utils.js             # scanFiles, routeQuery, pruneAndSummarize, extractQueryFeatures
-│   └── codesearch/          # Code chunk extraction & indexing
+│   └── codesearch/          # Code chunk extraction & indexing (+ orphan cleanup for deleted files)
 ├── scripts/                 # createCollection, buildGraph, indexCodeStructure, testSearch
 ├── web/                      # Dashboard UI (port 8891) — dashboard.html + chart.umd.min.js (vendored Chart.js)
-├── config/                   # launchd cron job
+├── config/                   # launchd jobs (autoingest, gc)
 ├── qwen-extension.json       # Extension manifest (mcpServers + hooks)
 ├── AGENTS.md                 # Hard Gate search protocol (agent context)
 ├── hooks/                     # UserPromptSubmit / PreToolUse / PreCompact / SessionStart / Stop / SessionEnd
