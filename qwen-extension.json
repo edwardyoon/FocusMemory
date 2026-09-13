@@ -10,18 +10,7 @@
       "args": [
         "${extensionPath}${/}index.js"
       ],
-      "cwd": "${extensionPath}",
-      "env": {
-        "QDRANT_URL": "http://localhost:6333",
-        "BGE_URL": "http://localhost:8080/v1/embeddings",
-        "SUMMARY_LLM_URL": "http://localhost:8081/v1/completions",
-        "HTTP_PORT": "3900",
-        "MEILI_HOST": "http://localhost:7700",
-        "MEILI_INDEX": "docs_plans",
-        "MEILI_MASTER_KEY": "${MEILI_MASTER_KEY}",
-        "CONTEXT_API_TOKEN": "focus-memory-local",
-        "FOCUS_LOG_FILE": "/tmp/focus-memory.log"
-      }
+      "cwd": "${extensionPath}"
     }
   },
 
