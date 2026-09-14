@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
 import skillState from "./hooks/lib/skillstate.js";
 import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
+import * as fmConfig from "./lib/config.js";
 
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const MEILI_HOST = process.env.MEILI_HOST || "http://localhost:7700";
@@ -2062,8 +2063,66 @@ try {
     }
   });
 
-  const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort });
-  console.error(`[FocusMemory] Dashboard UI listening on :${dashboardPort}`);
+  // ── Config (settings page) ──
+  // GET is open like the other dashboard reads (sensitive values are masked).
+  // Write/test require the API token — the same one /v1/context/search uses.
+  const configAuth = (cD) => {
+    const token =
+      cD.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
+      cD.req.header("x-api-auth") ||
+      "";
+    return token === API_TOKEN ? null : cD.json({ error: "Unauthorized" }, 401);
+  };
+
+  dashApp.get("/api/config", async (cD) => {
+    try {
+      return cD.json(await fmConfig.readConfig());
+    } catch (err) {
+      return cD.json({ error: err.message }, 500);
+    }
+  });
+
+  dashApp.put("/api/config", async (cD) => {
+    const denied = configAuth(cD);
+    if (denied) return denied;
+    let body;
+    try {
+      body = await cD.req.json();
+    } catch {
+      return cD.json({ error: "body는 JSON 객체여야 합니다" }, 400);
+    }
+    try {
+      const result = await fmConfig.updateConfig(body);
+      log(`[Dashboard /api/config] updated: ${result.changed.map((c) => c.key).join(", ") || "(none)"}`);
+      return cD.json({ success: true, ...result });
+    } catch (err) {
+      if (err instanceof fmConfig.ConfigError) return cD.json({ error: err.message }, 400);
+      return cD.json({ error: err.message }, 500);
+    }
+  });
+
+  dashApp.post("/api/config/test", async (cD) => {
+    const denied = configAuth(cD);
+    if (denied) return denied;
+    let body;
+    try {
+      body = await cD.req.json();
+    } catch {
+      body = {};
+    }
+    try {
+      const results = await fmConfig.testConnections(body.overrides || {});
+      return cD.json({ results });
+    } catch (err) {
+      return cD.json({ error: err.message }, 500);
+    }
+  });
+
+  // Bind to localhost by default — the write endpoints make the dashboard a
+  // config mutation surface, so LAN exposure requires an explicit opt-in.
+  const dashHost = process.env.DASHBOARD_HOST || "127.0.0.1";
+  const dashServer = await serve({ fetch: dashApp.fetch, port: dashboardPort, hostname: dashHost });
+  console.error(`[FocusMemory] Dashboard UI listening on ${dashHost}:${dashboardPort}`);
 
   if (dashServer && typeof dashServer.on === "function") {
     dashServer.on("error", (err) => {

@@ -273,9 +273,13 @@ BGE_URL=http://localhost:8080/v1/embeddings \
 npm start
 ```
 
+**First-time setup without editing `.env` by hand:** once the server is up, open the dashboard → **설정** page, fill in the service URLs (Qdrant, BGE, Meilisearch, LLMs, workspace dirs), press **연결 테스트** to verify each endpoint, then **저장**. Fields that need a restart are flagged, so you know exactly what to restart afterward.
+
 For a full rebuild after schema changes: `npm run auto-ingest --force` (re-ingests all docs/plans and force-reindexes code chunks).
 
-**Dashboard** (auto-launches alongside the MCP server): `http://localhost:8891`, refreshing every 30s. Left sidebar with three pages: **통계** (summary bar + Chart.js overview charts — Qdrant/Meilisearch per-collection bar charts, read hard-gate and write-back-gate doughnuts — plus per-backend collection cards and system info), **skill.state** (Σ lifecycle, see Observability above), and **todos** (day TODO TOC from `TODOS_DIR`). Hash-based routing (`#/stats`, `#/skillstate`, `#/todos`) so refresh keeps the current page. Chart.js is vendored locally (`web/chart.umd.min.js`, no CDN). JSON stats at `/api/stats` on both port 8891 and 3900. Override with `DASHBOARD_PORT`.
+**Dashboard** (auto-launches alongside the MCP server): `http://localhost:8891`, refreshing every 30s. Left sidebar with four pages: **통계** (summary bar + Chart.js overview charts — Qdrant/Meilisearch per-collection bar charts, read hard-gate and write-back-gate doughnuts — plus per-backend collection cards and system info), **skill.state** (Σ lifecycle, see Observability above), **todos** (day TODO TOC from `TODOS_DIR`), and **설정** (settings). Hash-based routing (`#/stats`, `#/skillstate`, `#/todos`, `#/config`) so refresh keeps the current page. Chart.js is vendored locally (`web/chart.umd.min.js`, no CDN). JSON stats at `/api/stats` on both port 8891 and 3900. Override with `DASHBOARD_PORT`.
+
+**Settings page** — edit `.env` from the browser instead of by hand: grouped fields (service URLs, LLM, workspace dirs, SKILL.state, GC, runner/auth) with per-field validation, a **연결 테스트** button that probes Qdrant/Meilisearch/BGE/SUMMARY_LLM/MAIN_LLM/SearXNG (using the form's current values, so a configuration can be validated before saving), and **저장** which rewrites `.env` in place (comments preserved, atomic tmp+rename). Each field is badged with when the change takes effect — **즉시** (hooks/launchd jobs re-read `.env` per run), **재시작** (captured at MCP server start → restart the qwen-code session), or **프로세스** (a PM2 process caches it → the note carries the command, e.g. `pm2 restart todo-runner`). Sensitive values (`MEILI_MASTER_KEY`, `CONTEXT_API_TOKEN`) are masked; leaving them blank keeps the existing value. Save and connection-test require the API token (`CONTEXT_API_TOKEN`), same as `/v1/context/search`; reads stay open. The dashboard binds to `127.0.0.1` by default — set `DASHBOARD_HOST=0.0.0.0` to expose it on the LAN (write endpoints stay token-gated).
 
 ### Qwen Code extension install
 
@@ -350,9 +354,10 @@ FocusMemory/
 ├── meilisearch.js          # MeiliSearch indexer for docs/plans
 ├── lib/
 │   ├── utils.js             # scanFiles, routeQuery, pruneAndSummarize, extractQueryFeatures
+│   ├── config.js            # Dashboard settings: .env read/write (comment-preserving) + connection tests
 │   └── codesearch/          # Code chunk extraction & indexing (+ orphan cleanup for deleted files)
 ├── scripts/                 # createCollection, buildGraph, indexCodeStructure, testSearch
-├── web/                      # Dashboard UI (port 8891) — dashboard.html + chart.umd.min.js (vendored Chart.js)
+├── web/                      # Dashboard UI (port 8891) — dashboard.html (통계/skill.state/todos/설정) + chart.umd.min.js (vendored Chart.js)
 ├── config/                   # launchd jobs (autoingest, gc)
 ├── qwen-extension.json       # Extension manifest (mcpServers + hooks)
 ├── AGENTS.md                 # Hard Gate search protocol (agent context)

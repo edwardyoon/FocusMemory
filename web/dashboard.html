@@ -520,6 +520,62 @@
   .sigma-event-name { min-width: 110px; }
   .sigma-event-detail { color: var(--text-dim); word-break: break-word; }
 
+  /* ── Settings page ── */
+  .cfg-intro { font-size: 13px; color: var(--text-dim); margin-bottom: 12px; }
+  .cfg-intro code { color: var(--accent); }
+  .cfg-token-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  .cfg-input {
+    flex: 1;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 8px 10px;
+    font-family: inherit;
+  }
+  .cfg-input:focus { outline: none; border-color: var(--accent); }
+  select.cfg-input { flex: 0 0 auto; min-width: 90px; }
+  .cfg-btn {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 13px;
+    padding: 8px 16px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .cfg-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .cfg-btn:disabled { opacity: 0.5; cursor: default; }
+  .cfg-btn-primary { background: var(--accent); border-color: var(--accent); color: #0a0a0a; font-weight: 600; }
+  .cfg-btn-primary:hover { color: #0a0a0a; opacity: 0.85; }
+  .cfg-result { margin-bottom: 16px; }
+  .cfg-ok { color: var(--green); font-size: 13px; margin-bottom: 8px; }
+  .cfg-hint { font-size: 12px; color: var(--text-dim); margin-top: 8px; }
+  .cfg-test-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .cfg-test-table td { padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .cfg-test-table tr.ok td:first-child { color: var(--green); }
+  .cfg-test-table tr.fail td:first-child { color: var(--red); }
+  .cfg-test-url { color: var(--text-dim); word-break: break-all; }
+  .cfg-group { margin-bottom: 20px; }
+  .cfg-group-title {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+    margin-bottom: 6px;
+  }
+  .cfg-field { display: grid; grid-template-columns: 240px 1fr auto; gap: 10px; align-items: center; padding: 5px 0; }
+  .cfg-label { font-size: 13px; }
+  .cfg-note { grid-column: 2 / 4; font-size: 11px; color: var(--text-dim); margin-top: -3px; }
+  .cfg-badge { font-size: 10px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+  .cfg-badge-ok { background: rgba(74, 222, 128, 0.15); color: var(--green); }
+  .cfg-badge-warn { background: var(--accent-glow); color: var(--accent); }
+  .cfg-badge-dim { background: var(--surface-2); color: var(--text-dim); }
+
   /* Responsive */
   @media (max-width: 860px) {
     .sidebar {
@@ -541,6 +597,9 @@
     .grid { grid-template-columns: 1fr; }
     .chart-grid { grid-template-columns: 1fr; }
     .sigma-event { flex-wrap: wrap; }
+    .cfg-field { grid-template-columns: 1fr; }
+    .cfg-note { grid-column: 1; }
+    .cfg-token-row { flex-wrap: wrap; }
   }
 </style>
 </head>
@@ -555,6 +614,7 @@
     <a class="nav-item active" href="#/stats" data-page="stats"><span class="nav-glyph">▦</span>통계</a>
     <a class="nav-item" href="#/skillstate" data-page="skillstate"><span class="nav-glyph">Σ</span>skill.state</a>
     <a class="nav-item" href="#/todos" data-page="todos"><span class="nav-glyph">☑</span>todos</a>
+    <a class="nav-item" href="#/config" data-page="config"><span class="nav-glyph">⚙</span>설정</a>
   </nav>
   <div class="sidebar-footer">
     <div class="status-badge" id="statusBadge">
@@ -657,6 +717,25 @@
         <div class="loading"><div class="spinner"></div>Loading TODO...</div>
       </div>
     </section>
+
+    <!-- ── Page: 설정 ── -->
+    <section id="pageConfig" class="page" style="display:none">
+      <div class="page-title">설정</div>
+      <div class="cfg-intro">
+        <code>FocusMemory/.env</code>를 편집합니다. 주석은 보존됩니다.
+        저장·연결 테스트는 API 토큰(<code>CONTEXT_API_TOKEN</code>)이 필요합니다.
+      </div>
+      <div class="cfg-token-row">
+        <input type="password" id="cfgToken" class="cfg-input" placeholder="API 토큰 (CONTEXT_API_TOKEN)" autocomplete="off">
+        <button class="cfg-btn" id="cfgTestBtn">연결 테스트</button>
+        <button class="cfg-btn cfg-btn-primary" id="cfgSaveBtn">저장</button>
+      </div>
+      <div id="cfgTestResult" class="cfg-result" style="display:none"></div>
+      <div id="cfgSaveResult" class="cfg-result" style="display:none"></div>
+      <div id="cfgForm">
+        <div class="loading"><div class="spinner"></div>설정 로딩 중...</div>
+      </div>
+    </section>
   </div>
 </main>
 
@@ -664,7 +743,7 @@
 const API_BASE = ''; // same origin, served by index.js
 
 // ── Page routing (hash-based so refresh keeps the current page) ──
-const PAGES = ['stats', 'skillstate', 'todos'];
+const PAGES = ['stats', 'skillstate', 'todos', 'config'];
 
 function pageFromHash() {
   const h = location.hash.replace(/^#\/?/, '');
@@ -679,6 +758,7 @@ function showPage(name) {
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === name));
   // Charts in a hidden container have zero size — re-measure when visible again.
   if (name === 'stats') Object.values(charts).forEach(c => c.resize());
+  if (name === 'config') loadConfigForm();
 }
 
 window.addEventListener('hashchange', () => showPage(pageFromHash()));
@@ -1097,6 +1177,147 @@ function esc(s) {
   d.textContent = s;
   return d.innerHTML;
 }
+
+// ── Settings page (.env editor) ──
+const CFG_APPLIES = {
+  immediate: { label: '즉시', cls: 'cfg-badge-ok' },
+  restart: { label: '재시작', cls: 'cfg-badge-warn' },
+  external: { label: '프로세스', cls: 'cfg-badge-dim' },
+};
+let cfgFields = [];
+let cfgLoaded = false;
+
+const cfgTokenEl = () => document.getElementById('cfgToken');
+function cfgInitToken() {
+  const el = cfgTokenEl();
+  if (el.dataset.inited) return;
+  el.value = localStorage.getItem('fm_dash_token') || '';
+  el.addEventListener('input', () => localStorage.setItem('fm_dash_token', el.value.trim()));
+  el.dataset.inited = '1';
+}
+function cfgHeaders() {
+  const headers = { 'Content-Type': 'application/json' };
+  const t = cfgTokenEl().value.trim();
+  if (t) headers['Authorization'] = 'Bearer ' + t;
+  return headers;
+}
+
+function cfgFieldControl(f) {
+  if (f.type === 'enum') {
+    return `<select id="cfg_${f.key}" class="cfg-input">` +
+      f.enum.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('') + '</select>';
+  }
+  const placeholder = f.hasValue ? '•••• (설정됨 — 비우면 유지)' : (f.placeholder || '');
+  return `<input id="cfg_${f.key}" class="cfg-input" type="text" value="${esc(f.value)}" placeholder="${esc(placeholder)}" autocomplete="off" spellcheck="false">`;
+}
+
+async function loadConfigForm() {
+  if (cfgLoaded) { cfgInitToken(); return; }
+  const box = document.getElementById('cfgForm');
+  try {
+    const res = await fetch('/api/config');
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    cfgFields = data.fields;
+    const byGroup = {};
+    for (const f of data.fields) (byGroup[f.group] = byGroup[f.group] || []).push(f);
+    box.innerHTML = data.groups.map(g => `
+      <div class="cfg-group">
+        <div class="cfg-group-title">${esc(g.label)}</div>
+        ${(byGroup[g.id] || []).map(f => `
+          <div class="cfg-field">
+            <label class="cfg-label" for="cfg_${f.key}">${esc(f.label)}${f.isDefault ? ' <span style="color:var(--text-dim);font-size:11px">(기본값)</span>' : ''}</label>
+            ${cfgFieldControl(f)}
+            <span class="cfg-badge ${CFG_APPLIES[f.applies].cls}">${CFG_APPLIES[f.applies].label}</span>
+          </div>
+          ${f.note ? `<div class="cfg-note">${esc(f.note)}</div>` : ''}
+        `).join('')}
+      </div>`).join('');
+    cfgLoaded = true;
+    cfgInitToken();
+  } catch (err) {
+    box.innerHTML = `<div class="cfg-hint" style="color:var(--red)">설정 로딩 실패: ${esc(err.message)}</div>`;
+  }
+}
+
+/** Collect form values; empty sensitive fields are omitted (backend keeps existing). */
+function collectCfgValues() {
+  const out = {};
+  for (const f of cfgFields) {
+    const el = document.getElementById('cfg_' + f.key);
+    if (!el) continue;
+    const v = el.value.trim();
+    if (!v) continue;
+    out[f.key] = v;
+  }
+  return out;
+}
+
+document.getElementById('cfgTestBtn').addEventListener('click', async () => {
+  const box = document.getElementById('cfgTestResult');
+  const btn = document.getElementById('cfgTestBtn');
+  box.style.display = '';
+  box.innerHTML = '<div class="loading"><div class="spinner"></div>연결 테스트 중...</div>';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/config/test', {
+      method: 'POST',
+      headers: cfgHeaders(),
+      body: JSON.stringify({ overrides: collectCfgValues() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    box.innerHTML = '<table class="cfg-test-table">' + data.results.map(r => `
+      <tr class="${r.ok ? 'ok' : 'fail'}">
+        <td>${r.ok ? '✓' : '✗'}</td>
+        <td>${esc(r.service)}</td>
+        <td class="cfg-test-url">${esc(r.url || '-')}</td>
+        <td>${r.ms} ms</td>
+        <td>${esc(r.detail || '')}</td>
+      </tr>`).join('') + '</table>';
+  } catch (err) {
+    box.innerHTML = `<div class="cfg-hint" style="color:var(--red)">테스트 실패: ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('cfgSaveBtn').addEventListener('click', async () => {
+  const box = document.getElementById('cfgSaveResult');
+  const btn = document.getElementById('cfgSaveBtn');
+  box.style.display = '';
+  box.innerHTML = '<div class="loading"><div class="spinner"></div>저장 중...</div>';
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/config', {
+      method: 'PUT',
+      headers: cfgHeaders(),
+      body: JSON.stringify(collectCfgValues()),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    if (!data.changed.length) {
+      box.innerHTML = '<div class="cfg-hint">변경된 값이 없습니다 (값을 입력한 후 저장하세요).</div>';
+      return;
+    }
+    const rows = data.changed.map(c => {
+      const m = CFG_APPLIES[c.applies] || CFG_APPLIES.immediate;
+      return `<tr><td><span class="cfg-badge ${m.cls}">${m.label}</span></td>
+        <td><code>${esc(c.key)}</code></td><td>${esc(c.note || '')}</td></tr>`;
+    }).join('');
+    box.innerHTML = `<div class="cfg-ok">저장 완료 — ${data.changed.length}개 항목</div>
+      <table class="cfg-test-table">${rows}</table>
+      <div class="cfg-hint">«재시작» 항목: qwen-code 세션 재시작(MCP 서버). «프로세스» 항목: 노트의 명령 실행.</div>`;
+    // Refresh displayed values (sensitive placeholders, defaults)
+    cfgLoaded = false;
+    cfgFields = [];
+    loadConfigForm();
+  } catch (err) {
+    box.innerHTML = `<div class="cfg-hint" style="color:var(--red)">저장 실패: ${esc(err.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // Initial load + auto-refresh every 30s
 showPage(pageFromHash());
