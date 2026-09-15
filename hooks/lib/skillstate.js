@@ -340,6 +340,10 @@ function extractTranscriptTail(transcriptPath, budgetChars = 30000) {
 /**
  * Build the state-patch extraction prompt. Asks for a JSON patch only —
  * explicitly not a prose summary (the point of SKILL.state).
+ * Decision items carry their rationale (why, rejected alternatives,
+ * constraints), not just the what: post-compaction the session's
+ * chain-of-thought is gone (reasoning retention is disabled server-side),
+ * so each decision must be self-contained for the next session to act on.
  * Thinking is handled at the API layer (see callSummaryLLM): the model is
  * allowed to think, but the reasoning comes back in a separate
  * `reasoning_content` field that we discard — only the clean JSON `content`
@@ -369,11 +373,12 @@ ${transcriptText}
   "tests_status": {"<check name>": "pass|fail|pending"},
   "current_step": "what the agent is doing right now",
   "pending_checks": ["verifications still outstanding — snapshot, replace the old list"],
-  "decisions": ["new decisions made in this segment, one short line each"]
+  "decisions": ["new decisions made in this segment — each: the decision, then its rationale in 1-3 sentences (why this approach, rejected alternatives, discovered constraints)"]
 }
 
 [Rules]
 - files_touched / decisions / tests_status merge into the current state automatically — list only what is new or changed here.
+- decisions must be self-contained: the session's chain-of-thought is NOT preserved after compaction, so a future reader must understand the why from the item alone. Record only SETTLED decisions — never transcribe the reasoning process, dead ends, or speculation.
 - tests_status is a CURRENT-status map: if the current state lists a check as "fail" or "pending" and the recent conversation shows it now passing, you MUST report "<check name>": "pass" to clear the stale entry. A check must never stay "fail" after its fix is verified in the conversation — stale fails poison the next session's anchor.
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value (omit if unchanged from current state).
