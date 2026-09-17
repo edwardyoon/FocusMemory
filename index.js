@@ -44,6 +44,8 @@ const MEILI_TIMEOUT_MS = parseInt(process.env.MEILI_TIMEOUT_MS || "8000", 10);
 
 const qdrant = new QdrantClient({ url: QDRANT_URL, timeout: QDRANT_TIMEOUT_MS });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /**
  * Promise.race-based timeout wrapper.
  * Rejects with a descriptive error if the operation exceeds ms.
@@ -184,6 +186,7 @@ async function embed(text) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model: "bge-m3", input: text }),
   });
+  if (!res.ok) throw new Error(`BGE embedding server returned HTTP ${res.status}`);
   const data = await res.json();
   if (data.data && Array.isArray(data.data) && data.data[0]) {
     return data.data[0].embedding;
@@ -191,7 +194,7 @@ async function embed(text) {
   if (data.embedding) {
     return data.embedding;
   }
-  console.error("Failed to parse embedding response:", JSON.stringify(data).substring(0, 300));
+  log("Failed to parse embedding response:", JSON.stringify(data).substring(0, 300));
   return null;
 }
 
@@ -792,6 +795,9 @@ server.registerTool(
     },
   },
   async ({ summary_text, detail, reasoning, project, type, related_files, topic_key, supersedes, caused_by }) => {
+    if (supersedes && !UUID_RE.test(supersedes)) {
+      return { content: [{ type: "text", text: `Invalid supersedes id "${supersedes}" — expected a full UUID. A truncated id would be stored and break the reverse link. Re-run with the full decision_id.` }], isError: true };
+    }
     // Save to work_memory (backward compatible)
     const vector = await embed(summary_text);
     if (vector) {
@@ -820,9 +826,12 @@ server.registerTool(
     const chainContent = `${summary_text}${reasoning ? "\n" + reasoning : ""}`;
     const chainVector = await embed(chainContent);
 
-    // Auto-supersede detection: if no explicit supersedes, check for active nodes with same topic_key
+    // Auto-supersede detection: if no explicit supersedes, check for active nodes with same topic_key.
+    // Compare summary-only vectors on both sides: stored nodes keep content=summary, so comparing
+    // the new summary against existing summaries is symmetric. (summary+reasoning vs summary drifts
+    // around the 0.8 threshold and missed near-duplicates.)
     let effectiveSupersedes = supersedes || null;
-    if (!supersedes && chainVector) {
+    if (!supersedes && vector) {
       try {
         const activeNodes = await qdrant.scroll("decision_chains", {
           filter: {
@@ -839,9 +848,9 @@ server.registerTool(
           // Single active node — compute similarity to decide auto-supersede
           const existingContent = activeNodes.points[0].payload.content || "";
           const existingVector = await embed(existingContent);
-          if (existingVector && cosineSimilarity(chainVector, existingVector) >= 0.8) {
+          if (existingVector && cosineSimilarity(vector, existingVector) >= 0.8) {
             effectiveSupersedes = activeNodes.points[0].payload.decision_id;
-            log(`[auto-supersede] topic=${resolvedTopic}, similarity=${cosineSimilarity(chainVector, existingVector).toFixed(3)}, superseding ${effectiveSupersedes}`);
+            log(`[auto-supersede] topic=${resolvedTopic}, similarity=${cosineSimilarity(vector, existingVector).toFixed(3)}, superseding ${effectiveSupersedes}`);
           }
         } else if (activeNodes.points.length > 1) {
           // Multiple active nodes — find the highest-similarity candidate
@@ -851,7 +860,7 @@ server.registerTool(
             const ec = pt.payload.content || "";
             const ev = await embed(ec);
             if (ev) {
-              const sim = cosineSimilarity(chainVector, ev);
+              const sim = cosineSimilarity(vector, ev);
               if (sim > bestSim) { bestSim = sim; bestId = pt.payload.decision_id; }
             }
           }
@@ -889,15 +898,24 @@ server.registerTool(
         ],
       });
 
-      // Update superseded decision — reverse link + status change
+      // Update superseded decision — reverse link + status change.
+      // Isolated: the decision is already saved; a link failure must not fail the save
+      // (a "failed" response would make the caller retry and create a duplicate).
       if (effectiveSupersedes) {
-        await qdrant.setPayload("decision_chains", {
-          points: [effectiveSupersedes],
-          payload: { superseded_by: decision_id, status: "superseded" },
-        });
+        try {
+          await qdrant.setPayload("decision_chains", {
+            points: [effectiveSupersedes],
+            payload: { superseded_by: decision_id, status: "superseded" },
+          });
+        } catch (err) {
+          log(`[remember_decision] reverse link update failed for ${effectiveSupersedes}: ${err.message}`);
+        }
       }
     }
 
+    if (!vector && !chainVector) {
+      return { content: [{ type: "text", text: `Nothing saved: embedding unavailable for both summary and chain content — no records were written.` }], isError: true };
+    }
     const autoNote = effectiveSupersedes && !supersedes ? ` (auto-superseded ${effectiveSupersedes.slice(0, 8)})` : "";
     return { content: [{ type: "text", text: `Saved successfully. decision_id: ${decision_id}, topic_key: ${resolvedTopic}${autoNote}` }] };
   }
@@ -920,6 +938,30 @@ server.registerTool(
     // Find anchor node
     let anchor = decision_id || null;
 
+    // 1) Exact topic_key match first — vector search alone misses when the query
+    //    is the literal topic_key (e.g. "mysql_account_unification").
+    if (!anchor && query) {
+      try {
+        const exact = await withTimeout(
+          qdrant.scroll("decision_chains", {
+            filter: { must: [{ key: "topic_key", match: { value: query } }] },
+            limit: 10,
+            with_payload: ["decision_id", "status", "created_at"],
+          }),
+          QDRANT_TIMEOUT_MS,
+          "decision_chains.topicKey"
+        );
+        const active = exact.points.filter((p) => p.payload.status === "active");
+        const pool = (active.length ? active : exact.points).sort((a, b) =>
+          String(b.payload.created_at).localeCompare(String(a.payload.created_at))
+        );
+        anchor = pool[0]?.payload?.decision_id || null;
+      } catch (err) {
+        log(`[trace_decision_chain] topic_key lookup failed: ${err.message}`);
+      }
+    }
+
+    // 2) Vector fallback
     if (!anchor && query) {
       const vector = await embed(query);
       if (vector) {
@@ -934,6 +976,51 @@ server.registerTool(
 
     const output = await walkChain(anchor, direction);
     return { content: [{ type: "text", text: output }] };
+  }
+);
+
+// --- Tool 3c: delete a decision (cleanup for duplicates or bad records) ---
+server.registerTool(
+  "forget_decision",
+  {
+    title: "Forget Decision",
+    description:
+      "Delete a decision record by decision_id from decision_chains, and optionally the matching work_memory record(s) with identical summary text. Use to clean up duplicate or incorrect records.",
+    inputSchema: {
+      decision_id: z.string().describe("Full UUID of the decision to delete"),
+      work_memory_too: z.boolean().optional().default(true).describe("Also delete work_memory records with the identical summary text"),
+    },
+  },
+  async ({ decision_id, work_memory_too }) => {
+    if (!UUID_RE.test(decision_id)) {
+      return { content: [{ type: "text", text: `Invalid decision_id "${decision_id}" — expected a full UUID.` }], isError: true };
+    }
+    const found = await qdrant.scroll("decision_chains", {
+      filter: { must: [{ key: "decision_id", match: { value: decision_id } }] },
+      limit: 1,
+      with_payload: ["content"],
+    });
+    if (!found.points.length) {
+      return { content: [{ type: "text", text: `No decision found with id ${decision_id}.` }] };
+    }
+    await qdrant.delete("decision_chains", { points: [decision_id] });
+    let wmDeleted = 0;
+    if (work_memory_too) {
+      const summary = found.points[0].payload.content || "";
+      if (summary) {
+        const wmHits = await qdrant.scroll("work_memory", {
+          filter: { must: [{ key: "summary_text", match: { value: summary } }] },
+          limit: 10,
+          with_payload: false,
+        });
+        if (wmHits.points.length) {
+          await qdrant.delete("work_memory", { points: wmHits.points.map((p) => p.id) });
+          wmDeleted = wmHits.points.length;
+        }
+      }
+    }
+    log(`[forget_decision] deleted ${decision_id} (+${wmDeleted} work_memory)`);
+    return { content: [{ type: "text", text: `Deleted decision ${decision_id} (+${wmDeleted} work_memory record(s)).` }] };
   }
 );
 
