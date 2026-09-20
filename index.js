@@ -1312,7 +1312,8 @@ server.registerTool(
       const formatted = results.map((r, i) => {
         const p = r.payload;
         const snippetLang = p.language === "javascript" ? "js" : p.language;
-        return `#${i + 1} \`${p.entity_name}\` (${p.entity_type})\n  file: ${p.file_path}:${p.start_line}-${p.end_line}\n  lang: ${p.language} | score: ${r.score.toFixed(3)}\n  snippet:\n\`\`\`${snippetLang}\n${p.content.slice(0, 500)}\n\`\`\``;
+        const focusRef = `focus(file_path="${p.file_path}", entity_name="${p.entity_name}")`;
+        return `#${i + 1} \`${p.entity_name}\` (${p.entity_type})\n  file: ${p.file_path}:${p.start_line}-${p.end_line}\n  → ${focusRef}\n  lang: ${p.language} | score: ${r.score.toFixed(3)}\n  snippet:\n\`\`\`${snippetLang}\n${p.content.slice(0, 500)}\n\`\`\``;
       });
 
       const text = `Semantic code search results for "${query}" (${results.length} matches):\n\n${formatted.join("\n\n")}`;
@@ -1634,6 +1635,141 @@ server.registerTool(
 
     log(`[MCP trace_references] done, visited=${visited.size}`);
     return { content: [{ type: "text", text: output }] };
+  }
+);
+
+/**
+ * Format a focused Qdrant point into a readable full-content block.
+ * Code chunks render the complete (untruncated) source in a fence;
+ * decision/work-memory points render their structured fields.
+ */
+function formatFocusedPoint(point, collection) {
+  const p = point.payload || {};
+  const id = point.id;
+
+  if (collection === "code_chunks") {
+    const lang = p.language === "javascript" ? "js" : p.language;
+    const content = String(p.content || "");
+    const lineCount = content.split("\n").length;
+    let out = `## Focus: \`${p.entity_name}\` (${p.entity_type})\n`;
+    out += `file: ${p.file_path}:${p.start_line}-${p.end_line} | lang: ${p.language}\n`;
+    out += `complete chunk — ${lineCount} lines, ${content.length} chars (not truncated)\n\n`;
+    out += `\`\`\`${lang}\n${content}\n\`\`\`\n`;
+    out += `\n(point id: ${id})`;
+    return out;
+  }
+
+  // decision_chains / work_memory
+  let out = `## Focus: ${collection} point\n`;
+  if (p.decision_id) out += `decision_id: ${p.decision_id}\n`;
+  out += `topic_key: ${p.topic_key || "-"} | status: ${p.status || "-"}\n`;
+  if (p.created_at) out += `date: ${new Date(p.created_at).toISOString().split("T")[0]}\n`;
+  out += `\n### Content\n${p.content || p.summary_text || ""}\n`;
+  if (p.reasoning) out += `\n### Reasoning\n${p.reasoning}\n`;
+  if (p.detail) out += `\n### Detail\n${p.detail}\n`;
+  const files = p.file_paths?.length ? p.file_paths : p.related_files;
+  if (files?.length) out += `\n### Files\n${files.join(", ")}\n`;
+  out += `\n(point id: ${id})`;
+  return out;
+}
+
+// --- Tool 10: focus — fetch the complete original of a designated indexed chunk ---
+// Retrieval-side "focus" primitive (Declarative-Attention flavored): search tools
+// return a cheap index (address + snippet); the model names the chunk it needs and
+// focus() pulls its full original — without read_file-ing the entire file.
+server.registerTool(
+  "focus",
+  {
+    title: "Focus (Fetch Full Chunk)",
+    description:
+      "Fetch the COMPLETE original content of a specific indexed chunk by designating it — the 'focus' step of a two-stage lookup. Use after search_code / search_memory: survey the results (the cheap index), then focus on the 1-2 chunks you actually need to read in full. Prefer this over read_file when you need one function/method from a large file: it returns just that chunk, not the whole file. Reference a code chunk by file_path + entity_name (as shown in search_code results), or a decision by its decision_id with collection='decision_chains'.",
+    inputSchema: {
+      point_id: z.string().optional().describe("Exact Qdrant point UUID (e.g. a decision_id from search results). Fetches that single point from `collection`."),
+      file_path: z.string().optional().describe("Code chunk file path (e.g. 'verbally_server/redis.js'), as shown in search_code results"),
+      entity_name: z.string().optional().describe("Code chunk function/method/class name (e.g. 'callRestAPIAsync'), as shown in search_code results"),
+      line: z.number().optional().describe("Optional: disambiguate when the same entity_name appears more than once in the file — pass a line number inside the desired chunk"),
+      collection: z.enum(["code_chunks", "decision_chains", "work_memory"]).optional().default("code_chunks").describe("Which collection to fetch point_id from (default code_chunks)"),
+    },
+  },
+  async ({ point_id, file_path, entity_name, line, collection = "code_chunks" }) => {
+    const hasCodeRef = Boolean(file_path && entity_name);
+    if (!point_id && !hasCodeRef) {
+      return {
+        content: [{ type: "text", text: "focus() needs a chunk reference: either point_id (a UUID), or both file_path and entity_name (for a code chunk). Re-run search_code / search_memory to get a reference." }],
+        isError: true,
+      };
+    }
+
+    // ── Mode A: exact point fetch by UUID ──
+    if (point_id) {
+      let pts;
+      try {
+        const raw = await withTimeout(
+          qdrant.retrieve(collection, { ids: [point_id], with_payload: true }),
+          QDRANT_TIMEOUT_MS,
+          `focus.retrieve(${collection})`
+        );
+        pts = Array.isArray(raw) ? raw : (raw?.result || raw?.points || []);
+      } catch (err) {
+        return { content: [{ type: "text", text: `focus() retrieve failed on ${collection}: ${err.message}` }], isError: true };
+      }
+      if (pts.length === 0) {
+        return { content: [{ type: "text", text: `No point with id ${point_id} in ${collection}. It may have been pruned or re-indexed — re-run the search to get a current reference.` }], isError: true };
+      }
+      return { content: [{ type: "text", text: formatFocusedPoint(pts[0], collection) }] };
+    }
+
+    // ── Mode B: code chunk by file_path + entity_name ──
+    let matches;
+    try {
+      const res = await withTimeout(
+        qdrant.scroll("code_chunks", {
+          filter: {
+            must: [
+              { key: "file_path", match: { value: file_path } },
+              { key: "entity_name", match: { value: entity_name } },
+            ],
+          },
+          limit: 20,
+          with_payload: true,
+        }),
+        QDRANT_TIMEOUT_MS,
+        "focus.scroll(code_chunks)"
+      );
+      matches = res.points || [];
+    } catch (err) {
+      if (err.message && err.message.includes("not found")) {
+        return { content: [{ type: "text", text: "code_chunks collection does not exist. Run 'npm run create-collections' and 'npm run index-chunks' first." }], isError: true };
+      }
+      return { content: [{ type: "text", text: `focus() scroll failed: ${err.message}` }], isError: true };
+    }
+
+    if (matches.length === 0) {
+      return {
+        content: [{ type: "text", text: `No indexed chunk for ${entity_name} in ${file_path}. The file may be unindexed, the name may differ, or it changed since indexing. Re-run search_code to get a current reference.` }],
+        isError: true,
+      };
+    }
+
+    // Disambiguate multiple matches (same name in one file)
+    if (matches.length > 1) {
+      if (line != null) {
+        const containing = matches.find((m) => line >= m.payload.start_line && line <= m.payload.end_line);
+        const chosen = containing || matches.reduce((best, m) =>
+          Math.abs((m.payload.start_line || 0) - line) < Math.abs((best.payload.start_line || 0) - line) ? m : best
+        );
+        return { content: [{ type: "text", text: formatFocusedPoint(chosen, "code_chunks") }] };
+      }
+      const list = matches
+        .map((m, i) => `#${i + 1} lines ${m.payload.start_line}-${m.payload.end_line} (${m.payload.entity_type}) — disambiguate with line=${m.payload.start_line}`)
+        .join("\n");
+      return {
+        content: [{ type: "text", text: `${entity_name} appears ${matches.length} times in ${file_path}.\n${list}\n\nRe-call focus() with the line= parameter to pick one.` }],
+        isError: true,
+      };
+    }
+
+    return { content: [{ type: "text", text: formatFocusedPoint(matches[0], "code_chunks") }] };
   }
 );
 

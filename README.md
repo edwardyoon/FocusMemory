@@ -315,6 +315,7 @@ CONTEXT_API_TOKEN=focus-memory-local node index.js &
 | `search_work_memory` | Past decisions, resolved issues, open todos (direct) |
 | `search_project_facts` | DB schemas, infra topology, API specs (direct) |
 | `search_code` | Natural-language search over JS/TS/Python/PHP function bodies |
+| `focus` | Fetch the complete original of a designated chunk by `file_path`+`entity_name` (or a point UUID) — the "focus" step after `search_code`'s cheap index; returns just the chunk, not the whole file |
 | `query_graph` | Code graph: "who calls X?", functions in file Y, dependencies |
 | `remember_decision` | Write a new decision into work_memory + decision_chains (reasoning, topic_key, supersedes links) |
 | `search_web` | Web search via local search server |
