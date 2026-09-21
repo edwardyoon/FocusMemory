@@ -208,6 +208,13 @@ focus-llama and launched with `--da-prompt-scan` (see the *Production launch* se
 focus-llama README for the full recommended launch line). Against a stock `llama.cpp` server the
 markers are just prompt text — harmless, but no focus is enforced.
 
+**Use `--da-prompt-scan`, not `--da-auto`, for live agent sessions.** The server's `--da-auto`
+re-chunks the *entire* conversation on every turn and its tag state machine (tail hold-back +
+spec batch cut) has been observed cutting structured output blocks (tool calls) mid-stream — raw
+tag text leaks into the response. The hook's marker path is safer: it only marks the injected
+memory block at the prompt tail, so DA can never touch the agent's own conversation. Keep
+`--da-auto` for headless batch/bench traffic only.
+
 **Skip conditions.** The block is not injected when (a) the flag is off, (b) the search returns
 fewer than 2 entries, or (c) any entry's content contains a literal `[[da:` or `<da:` (which would
 corrupt the server's numbering check) — in that case the server would fail open anyway, so it is
