@@ -1876,76 +1876,6 @@ function getTitleFromPayload(payload) {
   return JSON.stringify(payload).substring(0, 120);
 }
 
-// ─── DA (Declarative Attention) marker injection ────────────────────────────
-// Gate: FOCUSMEMORY_DA=on. With 2+ search entries, the top entries are
-// wrapped in <da:N> markers + a <da:filler> instruction + a <da:layout:N>
-// footer, appended at the prompt tail so the llama.cpp server
-// (--da-prompt-scan) recovers the chunk layout from the rendered prompt and
-// the model's <focus magic_chunks="N"> tag drives the attention restriction.
-// Chunk numbers grow monotonically per session: earlier turns' blocks stay
-// in the conversation history with their own numbers, so a chunk number
-// always identifies the same content across turns.
-const DA_ENABLED = ["on", "1", "true"].includes((process.env.FOCUSMEMORY_DA || "").toLowerCase());
-const DA_MAX_ENTRIES = 5;
-const DA_ENTRY_CHARS = 300;
-const daSessionCounters = new Map(); // session_id -> next chunk number
-
-/** Truncate to n chars without splitting a UTF-16 surrogate pair. */
-function daSafeSlice(s, n) {
-  if (s.length <= n) return s;
-  let cut = s.slice(0, n);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1); // lone high surrogate
-  return cut + "…";
-}
-
-/** Plain knowledge text of a search result, truncated for a DA chunk. */
-function daChunkText(r) {
-  const p = r.payload || {};
-  let text = "";
-  if (p.summary_text) text += p.summary_text + "\n";
-  const body = p.detail || p.content || "";
-  if (body) text += String(body);
-  if (!text.trim()) text = getTitleFromPayload(p);
-  text = text.trim();
-  return daSafeSlice(text, DA_ENTRY_CHARS);
-}
-
-/**
- * Build the DA marker block for the given entries.
- * @returns {string|null} the block, or null when the content would corrupt
- *   the layout (a literal "<da:" inside an entry breaks the server's
- *   numbering check — better to skip injection than fail open server-side)
- */
-function buildDaBlock(entries, startNum) {
-  const texts = entries.map((r) => daChunkText(r));
-  if (texts.some((t) => t.includes("<da:"))) return null;
-  const n = texts.length;
-  let block = "";
-  texts.forEach((t, i) => {
-    block += `\n<da:${startNum + i}>${t}`;
-  });
-  const instruction =
-    `\n\nInstructions (Declarative Attention): ` +
-    `The memory entries above are numbered magic chunks (${startNum}-${startNum + n - 1}). ` +
-    `First identify the chunk that contains the answer to the question, and output the tag ` +
-    `<focus magic_chunks="N"> on its own line, where N is the chunk number (${startNum}-${startNum + n - 1}). ` +
-    `Then answer the question.`;
-  block += `\n<da:filler>${instruction}\n<da:layout:${n}>`;
-  return block;
-}
-
-/** Monotonic per-session chunk numbers; returns the block's first number. */
-function daNextChunkNumbers(sessionId, count) {
-  const key = sessionId || "__global__";
-  if (!daSessionCounters.has(key) && daSessionCounters.size > 1000) {
-    daSessionCounters.clear(); // bound the map in long-running processes
-  }
-  const next = daSessionCounters.get(key) || 1;
-  daSessionCounters.set(key, next + count);
-  return next;
-}
-
 httpApp.post("/v1/context/search", async (c) => {
   // Auth check
   const token = c.req.header("Authorization")?.replace("Bearer ", "");
@@ -2035,24 +1965,6 @@ httpApp.post("/v1/context/search", async (c) => {
     }
   } catch (err) {
     log(`[Hook /v1/context/search] turn state stamp failed: ${err.message}`);
-  }
-
-  // DA marker block: gate + 2+ entries. Appended at the prompt tail so the
-  // server's --da-prompt-scan sees it as the current turn's layout block.
-  if (DA_ENABLED && allResults.length >= 2) {
-    try {
-      const entries = sliced.slice(0, DA_MAX_ENTRIES);
-      const startNum = daNextChunkNumbers(body.session_id, entries.length);
-      const daBlock = buildDaBlock(entries, startNum);
-      if (daBlock) {
-        additionalContext += daBlock;
-        log(`[Hook /v1/context/search] DA block injected: ${entries.length} chunk(s) numbered ${startNum}..${startNum + entries.length - 1} (session=${body.session_id || "global"})`);
-      } else {
-        log(`[Hook /v1/context/search] DA block skipped: entry content contains a literal "<da:" marker`);
-      }
-    } catch (err) {
-      log(`[Hook /v1/context/search] DA block failed: ${err.message}`);
-    }
   }
 
   return c.json({ hookEventName: "UserPromptSubmit", additionalContext });
