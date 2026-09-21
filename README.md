@@ -181,13 +181,37 @@ Extraction can race the native compaction summary; if native compaction finishes
 
 ## Declarative Attention (DA)
 
-The [Declarative Attention](https://arxiv.org/abs/2609.02737) protocol is enforced entirely on the
-inference-server side by [focus-llama](https://github.com/edwardyoon/focus-llama). FocusMemory sends
-plain `/v1/chat/completions` traffic; when the server runs with `--da-auto` it chunks the rendered
-prompt itself (message boundaries, ~2K-token magic chunks) and applies the model's
-`<focus magic_chunks="N">` tags — no client-side markers, no `FOCUSMEMORY_DA` flag, nothing to
-configure here. See the *Production launch* and *Relationship to FocusMemory* sections of the
-focus-llama README for the launch line and verification notes.
+The auto-recall hook can mark the memory entries it injects as **numbered magic chunks**, so the
+[focus-llama](https://github.com/edwardyoon/focus-llama) inference server can restrict the model's
+attention to the chunk that actually answers the question. This is the client-side half of the
+[Declarative Attention](https://arxiv.org/abs/2609.02737) protocol: FocusMemory assembles the prompt
+from its own chunks, so it already knows where each chunk sits — the model decides which chunk to
+focus on, and the server enforces it.
+
+**Enable (client side — FocusMemory):**
+```bash
+# FocusMemory/.env
+FOCUSMEMORY_DA=on
+```
+Off by default — with the flag unset, auto-recall behaves exactly as before (no markers, full
+attention). When on, the top up to 5 search entries are wrapped, each truncated to 300 chars.
+
+**How it works** (fail-open throughout — any anomaly leaves the prompt unmarked and the server runs
+with full attention):
+
+- **UserPromptSubmit (auto-recall)** — when a search returns 2+ entries, the top entries are wrapped in `[[da:N]]` markers, followed by a `[[da:filler]]` instruction ("identify the chunk containing the answer and output `<focus magic_chunks="N">`") and a `[[da:layout:N]]` footer, appended at the tail of the injected context. The server's `--da-prompt-scan` recovers the chunk-to-token layout from these markers (the legacy `<da:N>`/`<da:filler>`/`<da:layout:N>` form is also accepted server-side; the hook emits the bracket form because angle brackets get mangled by markdown/HTML escaping between the hook and the rendered prompt).
+- **Per-session monotonic chunk numbers** — chunk numbers grow monotonically per session, so earlier turns' blocks stay in the conversation history with their own numbers and a chunk number always identifies the same content across turns.
+- **Server-side enforcement** — the model emits `<focus magic_chunks="N">` when it commits to a chunk, and the focus-llama server (launched with `--da-prompt-scan`) applies the attention restriction. On the 123 node the server uses backend A (`seq_rm` holes, monotonic).
+
+**Server-side requirement.** DA markers are inert unless the inference server is built from
+focus-llama and launched with `--da-prompt-scan` (see the *Production launch* section of the
+focus-llama README for the full recommended launch line). Against a stock `llama.cpp` server the
+markers are just prompt text — harmless, but no focus is enforced.
+
+**Skip conditions.** The block is not injected when (a) the flag is off, (b) the search returns
+fewer than 2 entries, or (c) any entry's content contains a literal `[[da:` or `<da:` (which would
+corrupt the server's numbering check) — in that case the server would fail open anyway, so it is
+cleaner to skip the injection.
 
 <br>
 
