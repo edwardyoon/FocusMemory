@@ -66,6 +66,16 @@ function main() {
   const anchor = ss.renderAnchor(sigma);
   if (!anchor) return; // Σ exists but has no renderable content
 
+  // Language directive follows DOCS_LANGUAGE (FocusMemory/.env, default EN) —
+  // the same knob taskReceiver.cjs uses for generated docs. Keeps the model's
+  // response language aligned with the workspace convention across DA mode
+  // switches (FOCUS/LOCAL attend a single chunk + scaffold, so the system
+  // prompt's language rule gets diluted by the attended content's language).
+  const lang = (ss.env('DOCS_LANGUAGE', 'EN') || 'EN').toUpperCase();
+  const langDirective = lang === 'KR'
+    ? '\n[언어] 모든 응답은 한국어로 작성한다 (QWEN.md: 모든 통신은 한국어로만).'
+    : '\n[Language] Respond in English (QWEN.md: all communication in English).';
+
   ss.appendTelemetry({
     ts: Date.now(),
     session_id: sessionId,
@@ -80,7 +90,7 @@ function main() {
     additionalContext:
       `Session state anchor (FocusMemory Σ, as of the end of the previous turn — ` +
       `may be stale; cross-check failing/pending items against current ground truth ` +
-      `before acting on them):\n${anchor}`,
+      `before acting on them):\n${anchor}${langDirective}`,
   });
 }
 
