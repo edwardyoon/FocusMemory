@@ -138,6 +138,20 @@
         ]
       }
     ],
+    "PostCompact": [
+      {
+        "description": "DA dead-marker observation — count [[da:]/<da: marker strings copied into the compaction summary (telemetry only; the hook output channel is a no-op in qwen-code). Gated by FOCUSMEMORY_DA=on (off/unset → immediate no-op, fail-open)",
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}postcompact-observe.js",
+            "name": "postcompact-observe",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "description": "SKILL.state — re-inject structured execution state (Σ) after compaction so the model prefers explicit state over the prose summary. Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",

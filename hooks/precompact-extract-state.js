@@ -128,11 +128,19 @@ function main() {
 
   spawnWorker(event);
 
+  let nudge =
+    'FocusMemory SKILL.state: a structured execution state (files touched, test status, current step, pending checks, decisions) is being extracted from this conversation in parallel and persisted separately. ' +
+    'In your summary, do NOT re-enumerate those facts — focus on decisions, rationale, and open issues not captured as structured state.';
+  // DA on: keep dead [[da:N]] marker strings out of the summary. The
+  // focus-llama scanner (tail anchoring) already makes copied markers
+  // harmless — this only lowers the copy frequency (defense in depth).
+  if (['on', '1', 'true'].includes((ss.env('FOCUSMEMORY_DA', '') || '').toLowerCase())) {
+    nudge += ' Do NOT reproduce DA marker strings ([[da:...]] / <da:...>) or their instruction blocks in the summary.';
+  }
+
   ss.emitHookOutput({
     hookEventName: 'PreCompact',
-    additionalContext:
-      'FocusMemory SKILL.state: a structured execution state (files touched, test status, current step, pending checks, decisions) is being extracted from this conversation in parallel and persisted separately. ' +
-      'In your summary, do NOT re-enumerate those facts — focus on decisions, rationale, and open issues not captured as structured state.',
+    additionalContext: nudge,
   });
 }
 
