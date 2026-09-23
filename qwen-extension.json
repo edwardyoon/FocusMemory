@@ -102,6 +102,17 @@
     ],
     "Stop": [
       {
+        "description": "Turn-end guard — block stop when the turn result is a session-summary claiming no active task while a work anchor (Σ state / in-progress todos) exists; re-injects the anchor as the continuation prompt so the model resumes work instead of parking in a 'waiting' state. Self-limits via Σ (max 3 blocks / 30 min window, identical-message loop skip). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}stop-turn-guard.js",
+            "name": "stop-turn-guard",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
         "description": "Hard Gate (write-back) — detect completion signal and ask user to record decision via remember_decision",
         "hooks": [
           {
