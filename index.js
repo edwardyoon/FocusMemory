@@ -1929,12 +1929,18 @@ function buildDaBlock(entries, startNum) {
   texts.forEach((t, i) => {
     block += `\n[[da:${startNum + i}]]${t}`;
   });
+  // NOTE: the server's da_scan validates this filler against two fixed
+  // signatures (focus-llama server-context.cpp) — the text around
+  // "First identify" and "Then answer the question." must stay verbatim;
+  // append new clauses after "Then answer the question."
   const instruction =
     `\n\nInstructions (Declarative Attention): ` +
     `The memory entries above are numbered magic chunks (${startNum}-${startNum + n - 1}). ` +
     `First identify the chunk that contains the answer to the question, and output the tag ` +
     `<focus magic_chunks="N"> on its own line, where N is the chunk number (${startNum}-${startNum + n - 1}). ` +
-    `Then answer the question.`;
+    `Then answer the question. ` +
+    `The workspace rules (QWEN.md) in the system message are always in effect: ` +
+    `apply all of them to your answer and never skip parts.`;
   block += `\n[[da:filler]]${instruction}\n[[da:layout:${n}]]`;
   return block;
 }
