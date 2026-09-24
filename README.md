@@ -179,46 +179,43 @@ Extraction can race the native compaction summary; if native compaction finishes
 
 ---
 
-## Declarative Attention (DA)
+## kv-offload store (dumb KV backend for focus-llama)
 
-The auto-recall hook can mark the memory entries it injects as **numbered magic chunks**, so the
-[focus-llama](https://github.com/edwardyoon/focus-llama) inference server can restrict the model's
-attention to the chunk that actually answers the question. This is the client-side half of the
-[Declarative Attention](https://arxiv.org/abs/2609.02737) protocol: FocusMemory assembles the prompt
-from its own chunks, so it already knows where each chunk sits — the model decides which chunk to
-focus on, and the server enforces it.
+FocusMemory also runs a small **dumb per-session KV store** that backs the
+[focus-llama](https://github.com/edwardyoon/focus-llama) `--fm-offload` engine. The engine
+owns all the logic (deciding which messages to evict, re-prefilling on focus); FocusMemory
+just stores and returns the evicted message text verbatim — it does not chunk, embed, or
+search it. This lets a long agent session replace its lossy auto-compaction with a lossless
+evict/refill cycle: when the engine's prompt exceeds a threshold it PUTs the oldest middle
+messages here, and when the model focuses an offloaded chunk the engine GETs the text back
+and re-prefills it.
 
-**Enable (client side — FocusMemory):**
+**Enable (server side — FocusMemory):**
 ```bash
 # FocusMemory/.env
-FOCUSMEMORY_DA=on
+FOCUSMEMORY_KVOFFLOAD=on
+# the store auth token (the engine sends it as a Bearer header)
+CONTEXT_API_TOKEN=focus-memory-local
 ```
-Off by default — with the flag unset, auto-recall behaves exactly as before (no markers, full
-attention). When on, the top up to 5 search entries are wrapped, each truncated to 300 chars.
+Off by default — with the flag unset the routes return 404 (fail-open, the engine keeps the
+segment in the prompt).
 
-**How it works** (fail-open throughout — any anomaly leaves the prompt unmarked and the server runs
-with full attention):
+**HTTP API** (keyed by a stable 16-hex content hash the engine computes; auth is
+`Authorization: Bearer <CONTEXT_API_TOKEN>` or the `x-api-auth` header):
 
-- **UserPromptSubmit (auto-recall)** — when a search returns 2+ entries, the top entries are wrapped in `[[da:N]]` markers, followed by a `[[da:filler]]` instruction ("identify the chunk containing the answer and output `<focus magic_chunks="N">`") and a `[[da:layout:N]]` footer, appended at the tail of the injected context. The server's `--da-prompt-scan` recovers the chunk-to-token layout from these markers (the legacy `<da:N>`/`<da:filler>`/`<da:layout:N>` form is also accepted server-side; the hook emits the bracket form because angle brackets get mangled by markdown/HTML escaping between the hook and the rendered prompt).
-- **Per-session monotonic chunk numbers** — chunk numbers grow monotonically per session, so earlier turns' blocks stay in the conversation history with their own numbers and a chunk number always identifies the same content across turns.
-- **Server-side enforcement** — the model emits `<focus magic_chunks="N">` when it commits to a chunk, and the focus-llama server (launched with `--da-prompt-scan`) applies the attention restriction. On the 123 node the server uses backend A (`seq_rm` holes, monotonic).
+| Method | Path | Purpose |
+|--------|------|---------|
+| `PUT` | `/v1/kv-offload/chunk` | Store one evicted segment (`{session_id, key, text, tokens}`) |
+| `GET` | `/v1/kv-offload/chunk?session_id=&key=` | Fetch a segment's text back (get-on-focus) |
+| `DELETE` | `/v1/kv-offload/session?session_id=` | Drop a session's stored segments |
 
-**Server-side requirement.** DA markers are inert unless the inference server is built from
-focus-llama and launched with `--da-prompt-scan` (see the *Production launch* section of the
-focus-llama README for the full recommended launch line). Against a stock `llama.cpp` server the
-markers are just prompt text — harmless, but no focus is enforced.
+Segments are kept in per-session JSON files under `~/.qwen/tmp/focus-memory/kv-offload/`
+(atomic writes, lock-guarded), the same pattern as the session-state files.
 
-**Use `--da-prompt-scan`, not `--da-auto`, for live agent sessions.** The server's `--da-auto`
-re-chunks the *entire* conversation on every turn and its tag state machine (tail hold-back +
-spec batch cut) has been observed cutting structured output blocks (tool calls) mid-stream — raw
-tag text leaks into the response. The hook's marker path is safer: it only marks the injected
-memory block at the prompt tail, so DA can never touch the agent's own conversation. Keep
-`--da-auto` for headless batch/bench traffic only.
-
-**Skip conditions.** The block is not injected when (a) the flag is off, (b) the search returns
-fewer than 2 entries, or (c) any entry's content contains a literal `[[da:` or `<da:` (which would
-corrupt the server's numbering check) — in that case the server would fail open anyway, so it is
-cleaner to skip the injection.
+**Engine-side requirement.** The routes are inert unless the inference server is built from
+focus-llama and launched with `--fm-offload --focus-memory-host http://<this-host>:3900`
+(see the *kv-offload* section of the focus-llama README). Against a stock `llama.cpp` server
+these routes are simply unused.
 
 <br>
 

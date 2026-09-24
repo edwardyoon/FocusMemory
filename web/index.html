@@ -563,6 +563,51 @@
   </div>
 </section>
 
+<section id="kv-offload">
+  <div class="wrap reveal">
+    <span class="section-label">Lossless context</span>
+    <div class="section-head">
+      <h2>Long sessions that never amnesia-compact.</h2>
+    </div>
+    <p class="section-quote">
+      A long agent run normally hits its context window and loses detail to a lossy auto-compact summary. With
+      <a href="https://github.com/edwardyoon/focus-llama" style="color:var(--accent)">focus-llama</a>'s
+      <code style="font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--accent)">--fm-offload</code>
+      engine, the oldest conversation is evicted to FocusMemory verbatim and pulled back on demand — lossless.
+    </p>
+
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-icon">⇄</div>
+        <h3>Evict over threshold</h3>
+        <p>Once the engine's prompt passes a threshold (set under the client's compact point), the oldest middle messages are PUT to FocusMemory and removed from the prompt. System and the last user message are never evicted.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⤓</div>
+        <h3>Focus to recall</h3>
+        <p>Evicted segments become virtual chunks (M+1…M+K). When the model emits <code style="font-family:'JetBrains Mono',monospace;font-size:.82em">&lt;focus magic_chunks="N"&gt;</code> for one, the engine GETs its original text back and re-prefills it at the tail.</p>
+      </div>
+      <div class="card">
+        <div class="card-icon">⛨</div>
+        <h3>Dumb store, fail-open</h3>
+        <p>FocusMemory only stores and returns the text — no chunking, embedding, or search. Any store error fails open: the segment stays in the prompt, so a downed store degrades to a normal session, never to data loss.</p>
+      </div>
+    </div>
+
+    <div style="margin-top:40px;padding:28px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+      <span class="section-label" style="display:block;margin-bottom:12px">Why it beats auto-compact</span>
+      <p style="color:var(--text-2);font-size:.92rem;line-height:1.7;max-width:680px">
+        A recall re-prefills one evicted chunk and is <em>lossless</em>; an auto-compact replaces the
+        conversation with a lossy summary. The engine decides <em>which</em> messages leave and <em>how</em>
+        to bring one back; FocusMemory is just the external memory behind it.
+      </p>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--text-3);line-height:1.8;margin-top:14px">
+        PUT /v1/kv-offload/chunk &nbsp;·&nbsp; GET /v1/kv-offload/chunk &nbsp;·&nbsp; DELETE /v1/kv-offload/session &nbsp;|&nbsp; gated by FOCUSMEMORY_KVOFFLOAD=on
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="extension">
   <div class="wrap reveal">
     <div style="display:flex;align-items:center;gap:40px;flex-wrap:wrap">
