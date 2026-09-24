@@ -16,6 +16,7 @@ import path from "path";
 import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
 import skillState from "./hooks/lib/skillstate.js";
+import kvOffload from "./hooks/lib/kvoffload.js";
 import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 import * as fmConfig from "./lib/config.js";
 
@@ -2066,6 +2067,76 @@ httpApp.post("/v1/context/search", async (c) => {
   }
 
   return c.json({ hookEventName: "UserPromptSubmit", additionalContext });
+});
+
+// ─── KV offload store (focus-llama --kv-offload) ───────────────────────────
+// Dumb PUT/GET for evicted DA chunks (plans/focus-offload.md). The engine owns
+// the eviction decision + the physical KV removal / re-prefill; this only
+// persists chunk text keyed by (session_id, chunk_id). Gated by
+// FOCUSMEMORY_KVOFFLOAD=on. A disabled gate or a missing chunk is a 404 — the
+// engine's fail-open signal (it proceeds without the chunk, never blocks).
+
+/**
+ * Shared auth for the kv-offload routes — the same token as /v1/context/search,
+ * accepted via either Authorization: Bearer or x-api-auth (the engine sets one).
+ * @param {import('hono').Context} c
+ * @returns {import('hono').Response|null} a 401 response, or null when authorized
+ */
+function kvAuth(c) {
+  const token =
+    c.req.header("Authorization")?.replace(/^Bearer\s+/i, "") ||
+    c.req.header("x-api-auth") ||
+    "";
+  return token === API_TOKEN ? null : c.json({ error: "Unauthorized" }, 401);
+}
+
+httpApp.put("/v1/kv-offload/chunk", async (c) => {
+  const denied = kvAuth(c);
+  if (denied) return denied;
+  if (!kvOffload.kvOffloadEnabled()) return c.json({ error: "kv-offload disabled" }, 404);
+  let body;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "body는 JSON 객체여야 합니다" }, 400);
+  }
+  const sessionId = typeof body.session_id === "string" ? body.session_id : "";
+  const key = typeof body.key === "string" ? body.key : "";
+  const text = typeof body.text === "string" ? body.text : "";
+  if (!sessionId || !key || !text) {
+    return c.json({ error: "session_id, key (non-empty), text (non-empty) required" }, 400);
+  }
+  const res = kvOffload.putChunk(sessionId, key, text, body.tokens);
+  if (!res.ok) return c.json({ error: res.reason || "put failed" }, 500);
+  log(`[kv-offload] PUT session=${sessionId} key=${key} bytes=${res.bytes}`);
+  return c.json({ ok: true, session_id: sessionId, key, bytes: res.bytes });
+});
+
+httpApp.get("/v1/kv-offload/chunk", async (c) => {
+  const denied = kvAuth(c);
+  if (denied) return denied;
+  if (!kvOffload.kvOffloadEnabled()) return c.json({ error: "kv-offload disabled" }, 404);
+  const sessionId = c.req.query("session_id") || "";
+  const key = c.req.query("key") || "";
+  if (!sessionId || !key) {
+    return c.json({ error: "session_id, key required" }, 400);
+  }
+  const res = kvOffload.getChunk(sessionId, key);
+  if (!res.ok) return c.json({ error: res.reason || "not found" }, 404);
+  log(`[kv-offload] GET session=${sessionId} key=${key} bytes=${Buffer.byteLength(res.text, "utf8")}`);
+  return c.json({ ok: true, session_id: sessionId, key, text: res.text, tokens: res.tokens, ts: res.ts });
+});
+
+httpApp.delete("/v1/kv-offload/session", async (c) => {
+  const denied = kvAuth(c);
+  if (denied) return denied;
+  if (!kvOffload.kvOffloadEnabled()) return c.json({ error: "kv-offload disabled" }, 404);
+  const sessionId = c.req.query("session_id") || "";
+  if (!sessionId) return c.json({ error: "session_id required" }, 400);
+  const res = kvOffload.deleteSession(sessionId);
+  if (!res.ok) return c.json({ error: res.reason || "delete failed" }, 500);
+  log(`[kv-offload] DELETE session=${sessionId} removed=${res.removedChunks}`);
+  return c.json({ ok: true, session_id: sessionId, removed_chunks: res.removedChunks });
 });
 
 // ─── Dashboard: shared stats collector (used by both HTTP port and dashboard) ───
