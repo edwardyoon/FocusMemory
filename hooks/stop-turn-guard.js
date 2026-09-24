@@ -9,14 +9,19 @@
 // "waiting for instructions" state while the real work anchor (Σ state /
 // in-progress todos) still exists on disk.
 //
-// The guard fires only when ALL THREE conditions hold (conservative by
-// design — a legitimate "summarize the session" request must pass through):
+// The guard fires when the turn result matches a failure shape AND an
+// active anchor exists (conservative by design — a legitimate "summarize
+// the session" request or a genuine end-of-work must pass through):
 //   A. summary shape   — the turn result carries a session-summary title
-//                        marker (e.g. "# 세션 요약", "state snapshot").
+//                        marker (e.g. "# 세션 요약", "state snapshot")
+//                        AND a no-task claim (B).
+//   A2. greeting shape — the turn result is a fresh-session greeting asking
+//                        for a task (post-compaction identity reset, e.g.
+//                        "어떤 작업을 도와드릴까요?"). Fires alone (no B).
 //   B. no-task claim   — the summary asserts there is no active task /
 //                        the session is waiting for instructions.
 //   C. active anchor   — Σ has task_summary / current_step / pending_checks,
-//                        OR today's todos/YYYY-MM-DD.md has [~] / [!] items.
+//                        OR today's groups todos/YYYY-MM-DD.md has [~] / [!] items.
 //
 // On fire: emit decision "block" with a continuation reason that (1) declares
 // the just-written summary discarded, (2) re-injects the work anchor, (3)
@@ -67,6 +72,19 @@ const NO_TASK_CLAIM = [
   /no\s+task\s+(to|awaiting)/i,
   /waiting\s+for\s+(your\s+)?(instructions|input|next)/i,
   /nothing\s+(to\s+do|pending)/i,
+];
+
+// A2. fresh-session greeting shape (the post-compaction identity-reset
+// failure mode: the model re-identifies as a brand-new session — typically
+// anchored on the system prompt's repo context — and asks for a task while
+// a work anchor still exists on disk. The greeting itself is the no-task
+// claim, so A2 fires without an explicit B match.)
+const GREETING_SHAPE = [
+  /무엇을 도와드릴까요/,
+  /어떤 작업을 (진행할까요|도와드릴까요|시작할까요)/,
+  /what can i help (you )?with/i,
+  /how can i help/i,
+  /is there anything i can (do|help)/i,
 ];
 
 /**
@@ -127,7 +145,7 @@ function inProgressTodos(cwd) {
  */
 function buildReason(sigma, todos) {
   const parts = [
-    '[FocusMemory turn-guard] The turn you just ended produced a "session summary" that claims there is no active task. The work anchor below shows ongoing work, so that summary is INCORRECT. Treat it as discarded — do not extend, repeat, or build on it, and do not write another summary.',
+    '[FocusMemory turn-guard] The turn you just ended either wrote a "session summary" claiming there is no active task, or reset to a fresh-session greeting asking for a task. The work anchor below shows ongoing work, so that framing is INCORRECT. Treat the summary/greeting as discarded data — do not extend, repeat, or build on it, and do not re-introduce yourself as a new session.',
     '',
   ];
   const anchor = ss.renderAnchor(sigma);
@@ -168,10 +186,13 @@ function main() {
   const msg = String(event.last_assistant_message || '');
   if (!sessionId || !msg) return;
 
-  // A + B on the turn result.
+  // A + B on the turn result (summary shape), or A2 alone (greeting shape —
+  // the greeting itself asserts "no task" by asking for one).
   const shapeIdx = firstMatch(msg, SUMMARY_SHAPE);
+  const greetIdx = firstMatch(msg, GREETING_SHAPE);
   const noTaskIdx = firstMatch(msg, NO_TASK_CLAIM);
-  if (shapeIdx === -1 || noTaskIdx === -1) return; // not the failure shape — allow stop
+  const failureShape = (shapeIdx !== -1 && noTaskIdx !== -1) || greetIdx !== -1;
+  if (!failureShape) return; // not the failure shape — allow stop
 
   // C — active work anchor.
   const sigma = ss.loadSigma(sessionId);
@@ -216,7 +237,9 @@ function main() {
     session_id: sessionId,
     hook: 'stop-turn-guard',
     decision: 'block',
+    shape: greetIdx !== -1 && (shapeIdx === -1 || noTaskIdx === -1) ? 'greeting' : 'summary',
     shape_idx: shapeIdx,
+    greet_idx: greetIdx,
     no_task_idx: noTaskIdx,
     anchor: { sigma: sigmaActive, todos: todos.length },
     blocks: blocks + 1,
