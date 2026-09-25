@@ -192,7 +192,7 @@ verbatim — it does not chunk, embed, or search it. This is the durable layer o
 oldest middle messages here, and in the production holes mode (`--kv-offload-holes`) the
 evicted text stays in the prompt while only its KV is cut — the next request re-prefills one
 token, and an on-demand GET recall costs **~1–2 s (lossless)** vs **~5.3 min (lossy)** for a
-compaction. Production-verified end to end (123 qwen3.8-27B, since 09-26).
+compaction. Production-verified end to end (qwen3.8-27B on the production GPU node, since 09-26).
 
 **Enable (server side — FocusMemory):**
 ```bash
