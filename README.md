@@ -35,6 +35,8 @@ If the session crashes or the final extraction loses the race with native compac
 
 This is particularly useful for **extreme long-context local inference**: rather than reserving excessive VRAM for high-precision KV cache, FocusMemory lets the inference engine push the KV cache toward lower-bit quantization. Persisted state acts as a durable checkpoint above that lossy KV layer — information that degrades in aggressively quantized KV cache can be recovered from explicitly persisted state instead.
 
+It is also the durable backend for **lossless long-horizon context**: the kv-offload store (below) lets the [focus-llama](https://github.com/edwardyoon/focus-llama) engine evict old session context to disk and recall it verbatim on demand — measured at **~1–2 s per recall (lossless)** against **~5.3 min (lossy)** for a compaction, running in production since 09-26.
+
 **Four separated concerns:**
 
 * **KV cache** — maximize working context that fits in VRAM, even with aggressive quantization.
@@ -183,12 +185,14 @@ Extraction can race the native compaction summary; if native compaction finishes
 
 FocusMemory also runs a small **dumb per-session KV store** that backs the
 [focus-llama](https://github.com/edwardyoon/focus-llama) `--fm-offload` engine. The engine
-owns all the logic (deciding which messages to evict, re-prefilling on focus); FocusMemory
-just stores and returns the evicted message text verbatim — it does not chunk, embed, or
-search it. This lets a long agent session replace its lossy auto-compaction with a lossless
-evict/refill cycle: when the engine's prompt exceeds a threshold it PUTs the oldest middle
-messages here, and when the model focuses an offloaded chunk the engine GETs the text back
-and re-prefills it.
+owns all the logic (deciding which messages to evict, cutting their KV out of the sequence,
+re-prefilling on focus); FocusMemory just stores and returns the evicted message text
+verbatim — it does not chunk, embed, or search it. This is the durable layer of focus-llama's
+**lossless long-horizon** mode: as the engine's prompt grows past a threshold it PUTs the
+oldest middle messages here, and in the production holes mode (`--kv-offload-holes`) the
+evicted text stays in the prompt while only its KV is cut — the next request re-prefills one
+token, and an on-demand GET recall costs **~1–2 s (lossless)** vs **~5.3 min (lossy)** for a
+compaction. Production-verified end to end (123 qwen3.8-27B, since 09-26).
 
 **Enable (server side — FocusMemory):**
 ```bash
@@ -213,7 +217,8 @@ Segments are kept in per-session JSON files under `~/.qwen/tmp/focus-memory/kv-o
 (atomic writes, lock-guarded), the same pattern as the session-state files.
 
 **Engine-side requirement.** The routes are inert unless the inference server is built from
-focus-llama and launched with `--fm-offload --focus-memory-host http://<this-host>:3900`
+focus-llama and launched with
+`--fm-offload --kv-offload-holes --focus-memory-host http://<this-host>:3900`
 (see the *kv-offload* section of the focus-llama README). Against a stock `llama.cpp` server
 these routes are simply unused.
 
