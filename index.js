@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
 import skillState from "./hooks/lib/skillstate.js";
 import kvOffload from "./hooks/lib/kvoffload.js";
+import todoStore from "./hooks/lib/todostore.js";
 import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 import * as fmConfig from "./lib/config.js";
 
@@ -1774,6 +1775,42 @@ server.registerTool(
   }
 );
 
+// ─── Task-state (todo) store ────────────────────────────────────────────────
+// The model's persistent per-session working state. The focus-llama engine
+// (--todo-inject) re-injects this list every turn at the evict-protected
+// last_user position, so it survives kv-offload eviction. The list is stored
+// as a JSON array under key `todo:<session>` in the kv-offload store (see
+// hooks/lib/todostore.js); the engine GETs it verbatim and labels it as real
+// (non-scaffold) state. The default session key matches the engine's
+// fallback ("kv-offload-default" — Qwen Code does not set the OpenAI `user`
+// field, so the engine derives that constant for every session).
+
+server.registerTool(
+  "set_todo",
+  {
+    title: "Set Todo (Task State)",
+    description:
+      "Update the session's persistent task-state (todo) list. The focus-llama engine re-injects this list every turn at a protected position, so it survives context eviction — use it to keep multi-step work visible. Call it when you start a multi-step task (to lay out the plan) and after each step (to mark progress / next step). Pass the FULL desired list (mode=replace) or a few items to update or add (mode=upsert). Statuses: pending, in_progress, done. To finish/clear the task, replace with an empty list.",
+    inputSchema: {
+      items: z.array(z.object({
+        text: z.string().describe("The task/step description (one line)."),
+        status: z.enum(["pending", "in_progress", "done"]).optional().default("pending").describe("Current status of this item."),
+      })).describe("Todo items. For mode=replace this is the complete new list; for mode=upsert these update (by matching text) or append to the existing list."),
+      mode: z.enum(["replace", "upsert"]).optional().default("replace").describe("replace = items is the full new list (default); upsert = update/append these items and keep the rest."),
+      session_id: z.string().optional().describe("Session key. Omit to use the engine's default session (normally what you want)."),
+    },
+  },
+  async ({ items, mode = "replace", session_id }) => {
+    const sessionId = session_id || process.env.FOCUSMEMORY_TODO_SESSION || "kv-offload-default";
+    const res = (mode === "upsert") ? todoStore.upsertTodo(sessionId, items) : todoStore.setTodo(sessionId, items);
+    if (!res.ok) {
+      return { content: [{ type: "text", text: `set_todo failed: ${res.reason}` }], isError: true };
+    }
+    log(`[MCP set_todo] session=${sessionId} mode=${mode} count=${res.count}`);
+    return { content: [{ type: "text", text: `Todo updated (${mode}): ${res.count} item(s) stored.` }] };
+  }
+);
+
 // ─── HTTP Server: Generic Search V1 / UserPromptSubmit Hook endpoint ───
 
 const httpApp = new Hono();
@@ -1930,10 +1967,14 @@ function buildDaBlock(entries, startNum) {
   texts.forEach((t, i) => {
     block += `\n[[da:${startNum + i}]]${t}`;
   });
-  // NOTE: the server's da_scan validates this filler against two fixed
-  // signatures (focus-llama server-context.cpp) — the text around
-  // "First identify" and "Then answer the question." must stay verbatim;
-  // append new clauses after "Then answer the question."
+  // The model-facing English instruction above is free to be reworded. The
+  // cross-component contract is the versioned sig marker: the server's da_scan
+  // validates only "[[da:sig:v1:<start>-<end>]]" (focus-llama
+  // server-context.cpp), not the prose. Keep the marker form + version (v1) in
+  // sync with the server. The marker is invisible to the server's marker
+  // scanner (inner "sig:v1:a-b" is not a filler/layout/number), so it does not
+  // perturb the chunk/footer counts.
+  const sig = `[[da:sig:v1:${startNum}-${startNum + n - 1}]]`;
   const instruction =
     `\n\nInstructions (Declarative Attention): ` +
     `The memory entries above are numbered magic chunks (${startNum}-${startNum + n - 1}). ` +
@@ -1941,7 +1982,8 @@ function buildDaBlock(entries, startNum) {
     `<focus magic_chunks="N"> on its own line, where N is the chunk number (${startNum}-${startNum + n - 1}). ` +
     `Then answer the question. ` +
     `The workspace rules (QWEN.md) in the system message are always in effect: ` +
-    `apply all of them to your answer and never skip parts.`;
+    `apply all of them to your answer and never skip parts. ` +
+    sig;
   block += `\n[[da:filler]]${instruction}\n[[da:layout:${n}]]`;
   return block;
 }
