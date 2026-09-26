@@ -259,6 +259,48 @@ function mergeSigma(current, patch) {
   return next;
 }
 
+// Ghost-reference filter (2026-09-26 context-confusion incident): the
+// extractor LLM can transcribe a confabulated file citation straight out of
+// an assistant message (the incident: a turn that cited todos/2026-07-06.md
+// — a file that never existed — produced a Σ pending item that re-injected
+// into later sessions). This mechanical pre-merge check drops NEW patch
+// items that cite a dated todos file absent from disk. Conservative scope:
+// dated todos citations only, string array items only (pending_checks /
+// decisions / files_touched), and patch items only — existing Σ content is
+// never rewritten here (the Stop hook's ghost-file gate handles the live
+// turn; this blocks propagation into the next session).
+const GHOST_TODO_REF_RE = /((?:\/?[A-Za-z0-9._-]+\/)*todos\/\d{4}-\d{2}-\d{2}\.md)/g;
+
+/**
+ * Drop new patch items citing dated todos files that do not exist on disk.
+ * @param {object} patch - extracted state patch (mutated in place)
+ * @param {string} cwd - session working directory (relative-citation base)
+ * @returns {{patch: object, removed: Array<{key: string, item: string, refs: string[]}>}} the (mutated) patch plus the removed items for telemetry
+ */
+function filterGhostRefs(patch, cwd) {
+  const removed = [];
+  if (!patch || typeof patch !== 'object' || !cwd) return { patch, removed };
+  for (const key of ['pending_checks', 'decisions', 'files_touched']) {
+    const arr = patch[key];
+    if (!Array.isArray(arr)) continue;
+    patch[key] = arr.filter((item) => {
+      if (typeof item !== 'string') return true;
+      const ghosts = (item.match(GHOST_TODO_REF_RE) || []).filter((ref) => {
+        const abs = path.isAbsolute(ref) ? ref : path.join(cwd, ref);
+        let exists = false;
+        try {
+          exists = fs.existsSync(abs);
+        } catch {}
+        return !exists;
+      });
+      if (ghosts.length) removed.push({ key, item, refs: ghosts });
+      return ghosts.length === 0;
+    });
+    if (patch[key].length === 0) delete patch[key];
+  }
+  return { patch, removed };
+}
+
 // ─── Transcript extraction ────────────────────────────────────────────────
 
 /**
@@ -383,6 +425,7 @@ ${transcriptText}
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value (omit if unchanged from current state).
 - Use only facts present in the conversation. No speculation.
+- Grounding (anti-confabulation): an assistant message can CLAIM work it never did — citing files that no [call]/[result] line in this segment touched, or pending items "carried over from a previous session" with no tool-call evidence. State is what the tool calls show, not what the prose asserts. Omit any pending_checks / files_touched / decisions item whose only support is such an unsupported claim.
 - Output JSON only. No markdown fences, no commentary.`;
 }
 
@@ -625,6 +668,7 @@ module.exports = {
   saveSigma,
   sweepSigma,
   mergeSigma,
+  filterGhostRefs,
   SCHEMA_KEYS,
   hasMutatingCallsSince,
   renderAnchor,

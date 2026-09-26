@@ -50,10 +50,23 @@ async function runWorker(event) {
 
   const sigma = ss.loadSigma(sessionId);
   const rawOutput = await ss.callSummaryLLM(ss.buildExtractionPrompt(sigma, transcriptText), LLM_TIMEOUT_MS);
-  const patch = ss.extractJsonPatch(rawOutput);
-  if (!patch || Object.keys(patch).length === 0) {
+  const rawPatch = ss.extractJsonPatch(rawOutput);
+  if (!rawPatch || Object.keys(rawPatch).length === 0) {
     ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'precompact-extract-state', event: 'extract_failed', trigger: event.trigger });
     return; // fail-open — compaction proceeds without state
+  }
+
+  // Anti-confabulation propagation gate: drop new items citing dated todos
+  // files that do not exist on disk (2026-09-26 incident — a ghost citation
+  // in assistant prose became a Σ pending item re-injected into later
+  // sessions). Runs before the merge; existing Σ content is untouched.
+  const { patch, removed: ghostRemoved } = ss.filterGhostRefs(rawPatch, event.cwd);
+  if (ghostRemoved.length) {
+    ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'precompact-extract-state', event: 'ghost_refs_filtered', trigger: event.trigger, removed: ghostRemoved });
+  }
+  if (Object.keys(patch).length === 0) {
+    ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'precompact-extract-state', event: 'extract_empty_after_filter', trigger: event.trigger });
+    return;
   }
 
   const next = ss.mergeSigma(sigma, patch);

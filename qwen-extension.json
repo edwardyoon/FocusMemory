@@ -113,6 +113,17 @@
         ]
       },
       {
+        "description": "Ghost file citation gate — block stop when the turn's final message cites a dated todos file (todos/YYYY-MM-DD.md, relative or absolute) that does not exist on disk (2026-09-26 confabulation class: a ghost file citation anchored a fabricated work narrative); re-injects a correction prompt forcing disk re-verification. Self-limits via Σ (max 3 blocks / 30 min window, identical-message loop skip). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${extensionPath}${/}hooks${/}stop-ghost-file-gate.js",
+            "name": "stop-ghost-file-gate",
+            "timeout": 5000
+          }
+        ]
+      },
+      {
         "description": "Hard Gate (write-back) — detect completion signal and ask user to record decision via remember_decision",
         "hooks": [
           {
