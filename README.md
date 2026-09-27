@@ -222,6 +222,21 @@ focus-llama and launched with
 (see the *kv-offload* section of the focus-llama README). Against a stock `llama.cpp` server
 these routes are simply unused.
 
+**Client-side requirement (session keying).** The engine keys store files per session,
+resolving the session id per request in this order: the `X-Session-Id` header, the OpenAI
+`user` field, else the shared constant `kv-offload-default`. A client that sends neither
+resolves every request to that constant - all sessions' segments pile into one file, a
+recall for a segment stored under a different id 404s (fail-open: the model cannot read the
+evicted content), and a `DELETE` of one session wipes the shared segments. The qwen-code
+client must therefore carry the header - in its settings.json, on the endpoint entry that
+reaches the engine:
+
+```json
+"customHeaders": {
+  "X-Session-Id": "${session_id}"
+}
+```
+
 <br>
 
 ---
