@@ -214,8 +214,9 @@ function deleteSession(sessionId) {
 }
 
 /**
- * Sweep offload files older than maxAgeMs (mtime). Optional GC hook (the
- * existing garbageCollect.js can call this later); not wired to a route in v1.
+ * Sweep offload files older than maxAgeMs (mtime). Not called from any hook
+ * today; the daily garbageCollect.js Phase C sweeps KV_DIR directly by mtime
+ * (GC_SESSION_RETENTION_DAYS), which covers crashed/kill sessions too.
  * @param {number} maxAgeMs - 0 means "delete regardless of age"
  * @returns {number} number of files removed
  */

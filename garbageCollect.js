@@ -1,5 +1,5 @@
 // FocusMemory garbage collection — time-based retention for unbounded
-// accumulators. Whitelist approach: ONLY the two targets below are ever
+// accumulators. Whitelist approach: ONLY the three targets below are ever
 // touched. Decisions (work_memory type=decision/bug_resolved), decision_chains,
 // graph_* and code_chunks are NEVER age-pruned — causal-chain integrity and
 // code-index freshness are managed elsewhere (recency decay, file-existence
@@ -13,6 +13,12 @@
 //   Phase B — work_memory points with type=state_checkpoint and
 //             timestamp < cutoff are deleted by explicit ID list (narrow
 //             filter + ID delete; no broad filter delete against work_memory).
+//   Phase C — per-session files (skill state, kv-offload, tool-call state)
+//             with mtime older than GC_SESSION_RETENTION_DAYS are deleted
+//             from the three whitelisted dirs under ~/.qwen/tmp. Active
+//             sessions keep rewriting their files, so mtime is the liveness
+//             signal; gate-telemetry.jsonl is already size-bounded by the
+//             writer (rotateJsonl) and is not touched here.
 //
 // Usage:
 //   node garbageCollect.js            # live run (requires GC_ENABLED=on)
@@ -21,6 +27,7 @@
 
 import dotenv from "dotenv";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 import path from "path";
 import fs from "fs/promises";
 import { QdrantClient } from "@qdrant/js-client-rest";
@@ -36,6 +43,16 @@ const GC_ARCHIVE_DIR =
   process.env.GC_ARCHIVE_DIR || path.join(path.dirname(TODOS_DIR), "todos_archive");
 const QDRANT_URL = process.env.QDRANT_URL || "http://127.0.0.1:6333";
 const GC_LOG_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), "logs", "gc.log");
+
+// Phase C — per-session artifact dirs (see header). Only files matching
+// SESSION_FILE_RE in these exact dirs are ever age-deleted.
+const QWEN_TMP = path.join(os.homedir(), ".qwen", "tmp");
+const SESSION_DIRS = [
+  path.join(QWEN_TMP, "focus-memory", "state"),
+  path.join(QWEN_TMP, "focus-memory", "kv-offload"),
+  path.join(QWEN_TMP, "tool-calls"),
+];
+const SESSION_FILE_RE = /\.(json|jsonl|tmp|lock)$/;
 
 const LOCK_FILE = "/tmp/focusmemory-gc.lock";
 const LOCK_STALE_MS = 30 * 60 * 1000; // 30 min
@@ -196,8 +213,44 @@ async function gcCheckpoints(qdrant, retentionDays) {
 }
 
 /**
- * GC entry point: runs Phase A (todos archive) and Phase B (checkpoint
- * retention) when GC_ENABLED=on, logging a one-line summary to gc.log.
+ * Phase C — delete per-session files (skill state, kv-offload, tool-call
+ * state) whose mtime is older than the retention window. Only files matching
+ * SESSION_FILE_RE inside the whitelisted SESSION_DIRS are ever touched; a
+ * file written within the window (an active session) is never deleted.
+ * @param {number} retentionDays
+ * @returns {Promise<{removed: string[]}>} full paths of the files removed
+ *   (in dry-run: the files that would be removed)
+ */
+async function gcSessionFiles(retentionDays) {
+  const cutoff = Date.now() - retentionDays * 86400000;
+  const removed = [];
+  for (const dir of SESSION_DIRS) {
+    let entries;
+    try {
+      entries = await fs.readdir(dir);
+    } catch {
+      continue; // dir absent — nothing to sweep
+    }
+    for (const name of entries) {
+      if (!SESSION_FILE_RE.test(name)) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = await fs.stat(full);
+        if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+        if (!DRY_RUN) await fs.unlink(full);
+        removed.push(full);
+      } catch (err) {
+        console.error(`  ✗ session: ${name} — ${err.message}`);
+      }
+    }
+  }
+  return { removed };
+}
+
+/**
+ * GC entry point: runs Phase A (todos archive), Phase B (checkpoint
+ * retention) and Phase C (per-session file retention) when GC_ENABLED=on,
+ * logging a one-line summary to gc.log.
  * @returns {Promise<void>}
  */
 async function main() {
@@ -212,8 +265,10 @@ async function main() {
   await acquireLock();
   const todosDays = daysToNumber(process.env.GC_TODOS_RETENTION_DAYS, 30);
   const checkpointDays = daysToNumber(process.env.GC_CHECKPOINT_RETENTION_DAYS, 30);
+  const sessionDays = daysToNumber(process.env.GC_SESSION_RETENTION_DAYS, 7);
   console.log(
-    `[config] todos retention ${todosDays}d, checkpoint retention ${checkpointDays}d, archive ${GC_ARCHIVE_DIR}`
+    `[config] todos retention ${todosDays}d, checkpoint retention ${checkpointDays}d, ` +
+      `session retention ${sessionDays}d, archive ${GC_ARCHIVE_DIR}`
   );
 
   try {
@@ -238,8 +293,19 @@ async function main() {
     }
     console.log(`  ${DRY_RUN ? "would delete" : "deleted"} ${removed} state_checkpoint point(s)`);
 
+    // ── Phase C: per-session file retention ──────────────────────
+    console.log(`--- Phase C: per-session file retention (${sessionDays}d) ---`);
+    const { removed: sessionRemoved } = await gcSessionFiles(sessionDays);
+    console.log(
+      `  ${DRY_RUN ? "would delete" : "deleted"} ${sessionRemoved.length} session file(s)`
+    );
+    for (const p of sessionRemoved) {
+      console.log(`  [session] ${p}`);
+    }
+
     await gcLog(
-      `gc ${DRY_RUN ? "dry-run" : "run"} todos_archived=${archived.length} checkpoints_removed=${removed}`
+      `gc ${DRY_RUN ? "dry-run" : "run"} todos_archived=${archived.length} ` +
+        `checkpoints_removed=${removed} sessions_removed=${sessionRemoved.length}`
     );
     console.log("=== Done ===");
   } finally {
