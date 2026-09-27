@@ -32,17 +32,6 @@
         ]
       },
       {
-        "description": "Hard Gate — reset memoryCalled flag at start of each new turn so grep_search/glob is blocked until search_memory runs first",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${extensionPath}${/}hooks${/}reset-memory-flag.js",
-            "name": "reset-memory-flag",
-            "timeout": 3000
-          }
-        ]
-      },
-      {
         "description": "SKILL.state — per-turn state anchor: when the context has grown past the token threshold, inject a compact one-line Σ 'where are we' reminder (no LLM call, millisecond-scale). Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op, fail-open)",
         "hooks": [
           {
@@ -84,17 +73,6 @@
             "type": "command",
             "command": "node ${extensionPath}${/}hooks${/}log-tool-call.js",
             "name": "log-code-change",
-            "timeout": 5000
-          }
-        ]
-      },
-      {
-        "matcher": "^(grep_search|glob)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${extensionPath}${/}hooks${/}check-memory-first.js",
-            "name": "check-memory-first",
             "timeout": 5000
           }
         ]
