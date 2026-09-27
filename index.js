@@ -17,7 +17,6 @@ import { randomUUID } from "node:crypto";
 import hookState from "./hooks/lib/state.js";
 import skillState from "./hooks/lib/skillstate.js";
 import kvOffload from "./hooks/lib/kvoffload.js";
-import todoStore from "./hooks/lib/todostore.js";
 import { extractQueryFeatures, routeQuery, rerankMerged, pruneAndSummarize, inferTopicKey, cosineSimilarity, resolveFilePath, isTrivialQuery } from "./lib/utils.js";
 import * as fmConfig from "./lib/config.js";
 
@@ -1772,42 +1771,6 @@ server.registerTool(
     }
 
     return { content: [{ type: "text", text: formatFocusedPoint(matches[0], "code_chunks") }] };
-  }
-);
-
-// ─── Task-state (todo) store ────────────────────────────────────────────────
-// The model's persistent per-session working state. The focus-llama engine
-// (--todo-inject) re-injects this list every turn at the evict-protected
-// last_user position, so it survives kv-offload eviction. The list is stored
-// as a JSON array under key `todo:<session>` in the kv-offload store (see
-// hooks/lib/todostore.js); the engine GETs it verbatim and labels it as real
-// (non-scaffold) state. The default session key matches the engine's
-// fallback ("kv-offload-default" — Qwen Code does not set the OpenAI `user`
-// field, so the engine derives that constant for every session).
-
-server.registerTool(
-  "set_todo",
-  {
-    title: "Set Todo (Task State)",
-    description:
-      "Update the session's persistent task-state (todo) list. The focus-llama engine re-injects this list every turn at a protected position, so it survives context eviction — use it to keep multi-step work visible. Call it when you start a multi-step task (to lay out the plan) and after each step (to mark progress / next step). Pass the FULL desired list (mode=replace) or a few items to update or add (mode=upsert). Statuses: pending, in_progress, done. To finish/clear the task, replace with an empty list.",
-    inputSchema: {
-      items: z.array(z.object({
-        text: z.string().describe("The task/step description (one line)."),
-        status: z.enum(["pending", "in_progress", "done"]).optional().default("pending").describe("Current status of this item."),
-      })).describe("Todo items. For mode=replace this is the complete new list; for mode=upsert these update (by matching text) or append to the existing list."),
-      mode: z.enum(["replace", "upsert"]).optional().default("replace").describe("replace = items is the full new list (default); upsert = update/append these items and keep the rest."),
-      session_id: z.string().optional().describe("Session key. Omit to use the engine's default session (normally what you want)."),
-    },
-  },
-  async ({ items, mode = "replace", session_id }) => {
-    const sessionId = session_id || process.env.FOCUSMEMORY_TODO_SESSION || "kv-offload-default";
-    const res = (mode === "upsert") ? todoStore.upsertTodo(sessionId, items) : todoStore.setTodo(sessionId, items);
-    if (!res.ok) {
-      return { content: [{ type: "text", text: `set_todo failed: ${res.reason}` }], isError: true };
-    }
-    log(`[MCP set_todo] session=${sessionId} mode=${mode} count=${res.count}`);
-    return { content: [{ type: "text", text: `Todo updated (${mode}): ${res.count} item(s) stored.` }] };
   }
 );
 
