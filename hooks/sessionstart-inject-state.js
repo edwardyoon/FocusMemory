@@ -44,13 +44,19 @@ function main() {
   const sessionId = event.session_id;
   if (!sessionId) return;
 
+  // compact_count increment as one locked read-modify-write (this hook can
+  // race the Stop hooks of the turn that triggered the compaction).
+  let newCount = null;
+  ss.mutateSigma(sessionId, (sigma) => {
+    if (!sigma || Object.keys(sigma).length === 0) return null; // nothing extracted — fail-open
+    sigma.compact_count = (Number.isFinite(sigma.compact_count) ? sigma.compact_count : 0) + 1;
+    newCount = sigma.compact_count;
+    return sigma;
+  });
+  if (newCount === null) return;
+  ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'sessionstart-inject-state', event: 'injected', compact_count: newCount });
+
   const sigma = ss.loadSigma(sessionId);
-  if (!sigma || Object.keys(sigma).length === 0) return; // nothing extracted — fail-open
-
-  sigma.compact_count = (Number.isFinite(sigma.compact_count) ? sigma.compact_count : 0) + 1;
-  ss.saveSigma(sessionId, sigma);
-  ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'sessionstart-inject-state', event: 'injected', compact_count: sigma.compact_count });
-
   let body = JSON.stringify(sigma, null, 2);
   if (body.length > MAX_INJECT_CHARS) body = `${body.slice(0, MAX_INJECT_CHARS)}\n...[truncated]`;
   ss.emitHookOutput({

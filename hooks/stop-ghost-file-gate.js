@@ -23,7 +23,11 @@
 //
 // Loop guard (same discipline as stop-turn-guard.js — stop_hook_active is
 // hard-coded true on the messageBus Stop path and unusable): Σ-managed —
-// identical message hash → skip, at most MAX_BLOCKS within STREAK_WINDOW.
+// identical missing-path set → skip, at most MAX_BLOCKS within STREAK_WINDOW.
+// Keyed on the missing set, not the full message: a rephrased correction
+// turn that re-cites the same ghost file is the same loop (the full-message
+// hash let rephrasing dodge the guard and burn all MAX_BLOCKS — observed
+// 2026-09-28: three consecutive fires on one missing file).
 // qwen-code's own stopHookBlockingCap remains the outer safety net.
 //
 // Gated by FOCUSMEMORY_SKILLSTATE=on (off/unset → immediate no-op,
@@ -122,49 +126,57 @@ function main() {
   const missing = findMissingTodoCites(msg, event.cwd);
   if (missing.length === 0) return; // clean citations — allow stop
 
-  // Self loop guard (Σ-managed; stop_hook_active is unusable).
-  const sigma = ss.loadSigma(sessionId);
+  // Self loop guard (Σ-managed; stop_hook_active is unusable). Decision and
+  // state update run as ONE locked read-modify-write: this hook and
+  // stop-checkpoint-state run concurrently on the same Stop event, and the
+  // old load→modify→save sequence let a same-second checkpoint save clobber
+  // the block counter, disabling the guard (observed 2026-09-28: three
+  // consecutive fires on one missing file).
   const now = Date.now();
-  const streakStart = Number(sigma.ghost_gate_streak_start) || 0;
-  if (streakStart && now - streakStart > STREAK_WINDOW_MS) {
-    sigma.ghost_gate_blocks = 0;
-    sigma.ghost_gate_last_hash = null;
-    sigma.ghost_gate_streak_start = 0;
-  }
-  const blocks = Number(sigma.ghost_gate_blocks) || 0;
-  const h = hashMsg(msg);
+  // Loop key = the missing-path set, not the full message: rephrasing the
+  // correction while re-citing the same ghost file must still register as
+  // the same loop. Identical message ⇒ identical missing set, so this
+  // subsumes the old identical-message check.
+  const h = hashMsg(missing.join('\n'));
+  let outcome = null;
 
-  if (sigma.ghost_gate_last_hash === h || blocks >= MAX_BLOCKS) {
-    ss.saveSigma(sessionId, sigma);
-    ss.appendTelemetry({
-      ts: now,
-      session_id: sessionId,
-      hook: 'stop-ghost-file-gate',
-      decision: 'skip',
-      reason: sigma.ghost_gate_last_hash === h ? 'identical_message_loop' : 'max_blocks_reached',
-      blocks,
-      missing,
-    });
-    return;
-  }
+  ss.mutateSigma(sessionId, (sigma) => {
+    const streakStart = Number(sigma.ghost_gate_streak_start) || 0;
+    if (streakStart && now - streakStart > STREAK_WINDOW_MS) {
+      sigma.ghost_gate_blocks = 0;
+      sigma.ghost_gate_last_hash = null;
+      sigma.ghost_gate_streak_start = 0;
+    }
+    const blocks = Number(sigma.ghost_gate_blocks) || 0;
+    if (sigma.ghost_gate_last_hash === h || blocks >= MAX_BLOCKS) {
+      outcome = {
+        decision: 'skip',
+        reason: sigma.ghost_gate_last_hash === h ? 'identical_missing_loop' : 'max_blocks_reached',
+        blocks,
+      };
+      return sigma;
+    }
+    // Fire: consume the block, then emit.
+    sigma.ghost_gate_blocks = blocks + 1;
+    sigma.ghost_gate_last_hash = h;
+    if (!streakStart || now - streakStart > STREAK_WINDOW_MS) sigma.ghost_gate_streak_start = now;
+    outcome = { decision: 'block', blocks: blocks + 1 };
+    return sigma;
+  });
 
-  // Fire: consume the block, then emit.
-  sigma.ghost_gate_blocks = blocks + 1;
-  sigma.ghost_gate_last_hash = h;
-  if (!streakStart || now - streakStart > STREAK_WINDOW_MS) sigma.ghost_gate_streak_start = now;
-  ss.saveSigma(sessionId, sigma);
-
+  if (!outcome) return; // Σ unreadable — fail-open, allow stop
   ss.appendTelemetry({
     ts: now,
     session_id: sessionId,
     hook: 'stop-ghost-file-gate',
-    decision: 'block',
-    missing,
-    blocks: blocks + 1,
-    msg_hash: h,
+    decision: outcome.decision,
+    ...(outcome.decision === 'skip' ? { reason: outcome.reason } : { missing, loop_key: h }),
+    blocks: outcome.blocks,
   });
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason: buildReason(missing) }));
+  if (outcome.decision === 'block') {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: buildReason(missing) }));
+  }
 }
 
 main();

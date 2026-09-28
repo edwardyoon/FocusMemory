@@ -204,49 +204,62 @@ function main() {
   const todos = inProgressTodos(event.cwd);
   if (!sigmaActive && todos.length === 0) return; // no anchor — the claim may be true
 
-  // Self loop guard (Σ-managed; stop_hook_active is unusable — hard-coded true).
+  // Self loop guard (Σ-managed; stop_hook_active is unusable — hard-coded
+  // true). Decision + state update as ONE locked read-modify-write: the Stop
+  // hooks run concurrently on the same event, and the old load→modify→save
+  // sequence let same-second saves clobber the block counter (lost update —
+  // observed 2026-09-28 disabling the ghost-gate loop guard).
   const now = Date.now();
-  const streakStart = Number(sigma.turn_guard_streak_start) || 0;
-  if (streakStart && now - streakStart > STREAK_WINDOW_MS) {
-    sigma.turn_guard_blocks = 0;
-    sigma.turn_guard_last_hash = null;
-    sigma.turn_guard_streak_start = 0;
-  }
-  const blocks = Number(sigma.turn_guard_blocks) || 0;
   const h = hashMsg(msg);
+  let outcome = null;
+  let written = null;
 
-  if (sigma.turn_guard_last_hash === h) {
-    ss.saveSigma(sessionId, sigma);
-    ss.appendTelemetry({ ts: now, session_id: sessionId, hook: 'stop-turn-guard', decision: 'skip', reason: 'identical_message_loop', blocks });
-    return;
-  }
-  if (blocks >= MAX_BLOCKS) {
-    ss.saveSigma(sessionId, sigma);
-    ss.appendTelemetry({ ts: now, session_id: sessionId, hook: 'stop-turn-guard', decision: 'skip', reason: 'max_blocks_reached', blocks });
-    return;
-  }
+  written = ss.mutateSigma(sessionId, (cur) => {
+    const streakStart = Number(cur.turn_guard_streak_start) || 0;
+    if (streakStart && now - streakStart > STREAK_WINDOW_MS) {
+      cur.turn_guard_blocks = 0;
+      cur.turn_guard_last_hash = null;
+      cur.turn_guard_streak_start = 0;
+    }
+    const blocks = Number(cur.turn_guard_blocks) || 0;
+    if (cur.turn_guard_last_hash === h) {
+      outcome = { decision: 'skip', reason: 'identical_message_loop', blocks };
+      return cur;
+    }
+    if (blocks >= MAX_BLOCKS) {
+      outcome = { decision: 'skip', reason: 'max_blocks_reached', blocks };
+      return cur;
+    }
+    // Fire: consume the block, then emit.
+    cur.turn_guard_blocks = blocks + 1;
+    cur.turn_guard_last_hash = h;
+    if (!streakStart || now - streakStart > STREAK_WINDOW_MS) cur.turn_guard_streak_start = now;
+    outcome = { decision: 'block', blocks: blocks + 1 };
+    return cur;
+  });
 
-  // Fire: consume the block, then emit.
-  sigma.turn_guard_blocks = blocks + 1;
-  sigma.turn_guard_last_hash = h;
-  if (!streakStart || now - streakStart > STREAK_WINDOW_MS) sigma.turn_guard_streak_start = now;
-  ss.saveSigma(sessionId, sigma);
-
+  if (!outcome) return; // Σ unreadable — fail-open, allow stop
   ss.appendTelemetry({
     ts: now,
     session_id: sessionId,
     hook: 'stop-turn-guard',
-    decision: 'block',
-    shape: greetIdx !== -1 && (shapeIdx === -1 || noTaskIdx === -1) ? 'greeting' : 'summary',
-    shape_idx: shapeIdx,
-    greet_idx: greetIdx,
-    no_task_idx: noTaskIdx,
-    anchor: { sigma: sigmaActive, todos: todos.length },
-    blocks: blocks + 1,
+    decision: outcome.decision,
+    ...(outcome.decision === 'skip'
+      ? { reason: outcome.reason }
+      : {
+          shape: greetIdx !== -1 && (shapeIdx === -1 || noTaskIdx === -1) ? 'greeting' : 'summary',
+          shape_idx: shapeIdx,
+          greet_idx: greetIdx,
+          no_task_idx: noTaskIdx,
+          anchor: { sigma: sigmaActive, todos: todos.length },
+        }),
+    blocks: outcome.blocks,
     msg_hash: h,
   });
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason: buildReason(sigma, todos) }));
+  if (outcome.decision === 'block') {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: buildReason(written || sigma, todos) }));
+  }
 }
 
 main();
