@@ -106,6 +106,30 @@ function saveSigma(sessionId, sigma) {
 }
 
 /**
+ * Lock-protected read-modify-write of a session's Σ file. loadSigma() +
+ * saveSigma() are separate steps: the Stop hooks run as concurrent
+ * processes on the same event, so two of them can interleave
+ * read→modify→write and drop each other's update (lost update — observed
+ * 2026-09-28: a same-second stop-checkpoint save clobbered the ghost-gate
+ * block counter, disabling its loop guard and allowing three consecutive
+ * fires on one missing file). The mutator runs against a fresh read inside
+ * the lock, making the whole cycle atomic.
+ * @param {string} sessionId
+ * @param {(sigma: object) => object|null} mutate - receives the current Σ, returns the next Σ (or null to skip the write)
+ * @returns {object|null} the Σ as written (null when mutate skipped)
+ */
+function mutateSigma(sessionId, mutate) {
+  const file = sigmaFile(sessionId);
+  return withLock(file, () => {
+    const current = loadSigma(sessionId);
+    const next = mutate(current);
+    if (next === null) return null;
+    atomicWrite(file, JSON.stringify(next, null, 2));
+    return next;
+  });
+}
+
+/**
  * Delete SIGMA_DIR files older than maxAgeMs (mtime), optionally restricted
  * to names starting with `prefix`. Best-effort; returns removed count.
  * @param {number} maxAgeMs - 0 means "delete regardless of age" (within prefix)
@@ -183,6 +207,59 @@ function hasMutatingCallsSince(sessionId, fromBytes = 0) {
 }
 
 /**
+ * Detect a new REAL user message in the transcript since the last extraction
+ * (trigger 3 for the Stop hook). The transcript JSONL is append-only and keeps
+ * its full history across compactions (qwen only appends a `chat_compression`
+ * record), so a byte offset is a stable "since" marker. Real user messages are
+ * entries with type "user" and a text part; tool results are a separate entry
+ * type ("tool_result" with functionResponse parts), so they never count.
+ *
+ * Why: triggers 1 (mutating tool call) and 2 (50k context growth) both miss
+ * prose-only turns — which is exactly where task changes and CANCELLATIONS
+ * arrive. 2026-09-28 incident: the cancellation turn ("복구하라고 한적이
+ * 없다") was prose-only, so Σ — and the pin-release flag derived from it —
+ * went stale while the pinned cancelled request kept steering the model.
+ * @param {string} transcriptPath
+ * @param {number} [fromBytes=0] byte offset of the last extraction
+ * @returns {boolean}
+ */
+function hasNewUserMessageSince(transcriptPath, fromBytes = 0) {
+  if (!transcriptPath) return false;
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    const offset = size < fromBytes ? 0 : fromBytes;
+    if (size <= offset) return false;
+    // Read the ENTIRE new region, not a tail window: the transcript is
+    // chronological, so the new user message sits at the START of the region
+    // (hasMutatingCallsSince may tail-scan because a mutation anywhere in the
+    // window counts — here only the head matters). The region is one turn:
+    // the offset re-baselines at every firing Stop, and every turn begins
+    // with a user message.
+    const len = size - offset;
+    const fd = fs.openSync(transcriptPath, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, offset);
+      return buf.toString('utf8').split('\n').some((line) => {
+        if (!line) return false;
+        try {
+          const e = JSON.parse(line);
+          if (e.type !== 'user') return false;
+          return Array.isArray(e.message && e.message.parts) &&
+            e.message.parts.some((p) => typeof p.text === 'string' && p.text.length > 0);
+        } catch {
+          return false;
+        }
+      });
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Render a compact "where are we" anchor from Σ for per-turn injection
  * (UserPromptSubmit hook). One line, capped — the anchor must cost a
  * negligible fraction of the context it is meant to protect.
@@ -193,6 +270,7 @@ function renderAnchor(sigma) {
   if (!sigma || typeof sigma !== 'object') return '';
   const parts = [];
   if (sigma.task_summary) parts.push(`task: ${sigma.task_summary}`);
+  if (sigma.anchor_revoked === true) parts.push('original-task-anchor: REVOKED by user');
   if (sigma.current_step) parts.push(`step: ${sigma.current_step}`);
   if (Array.isArray(sigma.pending_checks) && sigma.pending_checks.length) {
     parts.push(`pending: ${sigma.pending_checks.slice(0, 5).join('; ')}`);
@@ -220,6 +298,9 @@ const KEY_RULES = {
   files_touched: 'union',
   decisions: 'union',
   tests_status: 'merge',
+  // Once the user revokes the original task anchor, it never un-revokes:
+  // an LLM "false" (or omission) can leave the flag alone, never clear it.
+  anchor_revoked: 'sticky_true',
 };
 const MAX_LIST_ITEMS = 50; // cap cumulative lists so Σ stays injection-sized
 
@@ -252,6 +333,8 @@ function mergeSigma(current, patch) {
         else merged[k] = v;
       }
       next[key] = merged;
+    } else if (rule === 'sticky_true') {
+      next[key] = next[key] === true || value === true;
     } else {
       next[key] = value;
     }
@@ -415,7 +498,8 @@ ${transcriptText}
   "tests_status": {"<check name>": "pass|fail|pending"},
   "current_step": "what the agent is doing right now",
   "pending_checks": ["verifications still outstanding — snapshot, replace the old list"],
-  "decisions": ["new decisions made in this segment — each: the decision, then its rationale in 1-3 sentences (why this approach, rejected alternatives, discovered constraints)"]
+  "decisions": ["new decisions made in this segment — each: the decision, then its rationale in 1-3 sentences (why this approach, rejected alternatives, discovered constraints)"],
+  "anchor_revoked": "boolean — see the anchor_revoked rule"
 }
 
 [Rules]
@@ -424,6 +508,7 @@ ${transcriptText}
 - tests_status is a CURRENT-status map: if the current state lists a check as "fail" or "pending" and the recent conversation shows it now passing, you MUST report "<check name>": "pass" to clear the stale entry. A check must never stay "fail" after its fix is verified in the conversation — stale fails poison the next session's anchor.
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value (omit if unchanged from current state).
+- anchor_revoked: set true ONLY when the user explicitly cancels, rejects, or supersedes the session's ORIGINAL first request in the recent conversation (e.g. "I never asked you to restore that — delete it again"). A follow-up, refinement, or new sub-task within the same task is NOT a revocation. It is sticky: if the current state is already true, keep it true. Omit it when unchanged.
 - Use only facts present in the conversation. No speculation.
 - Grounding (anti-confabulation): an assistant message can CLAIM work it never did — citing files that no [call]/[result] line in this segment touched, or pending items "carried over from a previous session" with no tool-call evidence. State is what the tool calls show, not what the prose asserts. Omit any pending_checks / files_touched / decisions item whose only support is such an unsupported claim.
 - Output JSON only. No markdown fences, no commentary.`;
@@ -488,7 +573,7 @@ async function callSummaryLLM(prompt, timeoutMs = 120000) {
   }
 }
 
-const SCHEMA_KEYS = ['task_summary', 'files_touched', 'tests_status', 'current_step', 'pending_checks', 'decisions'];
+const SCHEMA_KEYS = ['task_summary', 'files_touched', 'tests_status', 'current_step', 'pending_checks', 'decisions', 'anchor_revoked'];
 
 /**
  * Unwrap a {"state_patch": {...}} envelope if present.
@@ -666,11 +751,13 @@ module.exports = {
   sigmaFile,
   loadSigma,
   saveSigma,
+  mutateSigma,
   sweepSigma,
   mergeSigma,
   filterGhostRefs,
   SCHEMA_KEYS,
   hasMutatingCallsSince,
+  hasNewUserMessageSince,
   renderAnchor,
   checkpointId,
   extractTranscriptTail,

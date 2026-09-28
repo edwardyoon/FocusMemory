@@ -2,13 +2,20 @@
 // Stop hook — SKILL.state per-Stop state-change detection + context-growth
 // fallback checkpoint.
 //
-// Runs at the end of every turn. Two independent extraction triggers:
+// Runs at the end of every turn. Three independent extraction triggers:
 //   1. state change (primary): a mutating tool call (edit / write_file /
-//      remember_decision) was logged since the last extraction. Mechanical
-//      detection, no LLM — prose-only turns do not pay an extraction call.
+//      remember_decision) was logged since the last extraction.
 //   2. context growth (fallback): input_tokens grew INTERVAL (default 50k)
 //      past the last extraction — covers semantic drift that involves no
 //      file change (decisions made in prose only).
+//   3. new user message (B2): a REAL user message (transcript entry type
+//      "user" with a text part; tool results are a separate entry type)
+//      arrived since the last extraction. Triggers 1-2 both miss prose-only
+//      turns — which is exactly where task changes and CANCELLATIONS arrive.
+//      2026-09-28 incident: the cancellation turn was prose-only, so Σ (and
+//      the pin-release flag derived from it) went stale while the pinned
+//      cancelled request kept steering the model. Cost: one detached
+//      extraction call per user message (no user-visible latency).
 //
 // Either trigger spawns the SAME detached Σ extraction worker PreCompact
 // uses (precompact-extract-state.js --worker) — zero user-facing latency,
@@ -58,9 +65,23 @@ function toolLogSize(sessionId) {
 }
 
 /**
+ * Current size of the session's transcript JSONL (0 when absent).
+ * @param {string} transcriptPath
+ * @returns {number}
+ */
+function transcriptSize(transcriptPath) {
+  try {
+    return fs.statSync(transcriptPath).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Stop hook entry — record last_input_tokens every turn; extract when a
- * state change was logged or the context grew INTERVAL past the last
- * extraction. Spawns the shared detached worker and returns immediately.
+ * state change was logged, the context grew INTERVAL past the last
+ * extraction, or a real user message arrived since the last extraction.
+ * Spawns the shared detached worker and returns immediately.
  * @returns {void}
  */
 function main() {
@@ -78,24 +99,48 @@ function main() {
   const inputTokens = Number(event.input_tokens);
   if (!sessionId || !Number.isFinite(inputTokens) || inputTokens <= 0) return;
 
-  const sigma = ss.loadSigma(sessionId);
+  // Token bookkeeping + trigger detection/consumption as ONE locked
+  // read-modify-write: this hook and the other Stop hooks (ghost-gate,
+  // turn-guard) run concurrently on the same event, and the old
+  // load→modify→save sequence let same-second saves clobber each other
+  // (lost update — observed 2026-09-28 disabling the ghost-gate loop guard).
+  let stateChanged = false;
+  let intervalHit = false;
+  let newUserMsg = false;
 
-  // Always: persist the current context size (anchor threshold input).
-  sigma.last_input_tokens = inputTokens;
+  ss.mutateSigma(sessionId, (sigma) => {
+    // Always: persist the current context size (anchor threshold input).
+    sigma.last_input_tokens = inputTokens;
 
-  // Trigger 1 — mechanical state change since the last extraction.
-  const lastOffset = Number(sigma.last_extraction_log_bytes) || 0;
-  const stateChanged = ss.hasMutatingCallsSince(sessionId, lastOffset);
+    // Trigger 1 — mechanical state change since the last extraction.
+    const lastOffset = Number(sigma.last_extraction_log_bytes) || 0;
+    stateChanged = ss.hasMutatingCallsSince(sessionId, lastOffset);
 
-  // Trigger 2 — context growth fallback. Re-baseline when the context
-  // shrank (a compaction happened since), so the interval counts fresh.
-  let last = Number(sigma.last_checkpoint_tokens);
-  if (!Number.isFinite(last) || last < 0) last = 0;
-  if (inputTokens < last) last = inputTokens;
-  const intervalHit = inputTokens - last >= INTERVAL;
+    // Trigger 2 — context growth fallback. Re-baseline when the context
+    // shrank (a compaction happened since), so the interval counts fresh.
+    let last = Number(sigma.last_checkpoint_tokens);
+    if (!Number.isFinite(last) || last < 0) last = 0;
+    if (inputTokens < last) last = inputTokens;
+    intervalHit = inputTokens - last >= INTERVAL;
 
-  if (!stateChanged && !intervalHit) {
-    ss.saveSigma(sessionId, sigma); // last_input_tokens only
+    // Trigger 3 — a real user message arrived since the last extraction
+    // (prose-only task changes / cancellations).
+    const lastTranscript = Number(sigma.last_extraction_transcript_bytes) || 0;
+    newUserMsg = ss.hasNewUserMessageSince(event.transcript_path, lastTranscript);
+
+    if (stateChanged || intervalHit || newUserMsg) {
+      // Consume the triggers before spawning (persist first) so a
+      // re-entrant Stop cannot re-fire: growth is re-gated by
+      // last_checkpoint_tokens, state change by the tool-log byte offset,
+      // user messages by the transcript byte offset.
+      sigma.last_checkpoint_tokens = inputTokens;
+      sigma.last_extraction_log_bytes = toolLogSize(sessionId);
+      sigma.last_extraction_transcript_bytes = transcriptSize(event.transcript_path);
+    }
+    return sigma;
+  });
+
+  if (!stateChanged && !intervalHit && !newUserMsg) {
     ss.appendTelemetry({
       ts: Date.now(),
       session_id: sessionId,
@@ -105,13 +150,6 @@ function main() {
     });
     return;
   }
-
-  // Consume the triggers before spawning (persist first) so a re-entrant
-  // Stop cannot re-fire: growth is re-gated by last_checkpoint_tokens,
-  // state change by the tool-log byte offset.
-  sigma.last_checkpoint_tokens = inputTokens;
-  sigma.last_extraction_log_bytes = toolLogSize(sessionId);
-  ss.saveSigma(sessionId, sigma);
 
   try {
     const child = spawn(
@@ -138,7 +176,7 @@ function main() {
     session_id: sessionId,
     hook: 'stop-checkpoint-state',
     event: 'checkpoint',
-    trigger: stateChanged ? 'state-change' : 'context-growth',
+    trigger: stateChanged ? 'state-change' : intervalHit ? 'context-growth' : 'user-message',
     input_tokens: inputTokens,
   });
 }

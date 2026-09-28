@@ -30,6 +30,7 @@
 const fs = require('fs');
 const { spawn } = require('child_process');
 const ss = require('./lib/skillstate.js');
+const kv = require('./lib/kvoffload.js');
 
 const LLM_TIMEOUT_MS = 120000; // worker is detached — no hook timeout constrains it
 // Transcript window for extraction (rendered chars). Local 27B prefill is
@@ -48,8 +49,31 @@ async function runWorker(event) {
   const transcriptText = ss.extractTranscriptTail(event.transcript_path, BUDGET_CHARS);
   if (!transcriptText) return; // recording disabled or unreadable — nothing to extract
 
+  // Stale-worker guard: the transcript only grows after a Stop when the user
+  // starts the next turn. If it grew during the LLM call, a fresher worker
+  // will run on that next turn's Stop — merging this one-turn-old patch
+  // (task_summary / current_step / anchor_revoked) would clobber the newer
+  // state, so skip the merge.
+  const sizeAtRead = (() => {
+    try { return fs.statSync(event.transcript_path).size; } catch { return 0; }
+  })();
+
   const sigma = ss.loadSigma(sessionId);
   const rawOutput = await ss.callSummaryLLM(ss.buildExtractionPrompt(sigma, transcriptText), LLM_TIMEOUT_MS);
+
+  let sizeNow = 0;
+  try { sizeNow = fs.statSync(event.transcript_path).size; } catch {}
+  if (sizeNow > sizeAtRead) {
+    ss.appendTelemetry({
+      ts: Date.now(),
+      session_id: sessionId,
+      hook: 'precompact-extract-state',
+      event: 'extract_stale_skipped',
+      trigger: event.trigger,
+    });
+    return;
+  }
+
   const rawPatch = ss.extractJsonPatch(rawOutput);
   if (!rawPatch || Object.keys(rawPatch).length === 0) {
     ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'precompact-extract-state', event: 'extract_failed', trigger: event.trigger });
@@ -69,20 +93,38 @@ async function runWorker(event) {
     return;
   }
 
-  const next = ss.mergeSigma(sigma, patch);
-  // The base Σ was loaded before the LLM call; a concurrent Stop hook may
-  // have updated bookkeeping keys (last_input_tokens, last_checkpoint_tokens,
-  // last_extraction_log_bytes) during that window. Re-copy the non-schema
-  // keys from a fresh load so this save cannot roll them back (lost update).
-  const fresh = ss.loadSigma(sessionId);
-  for (const k of Object.keys(fresh)) {
-    if (ss.SCHEMA_KEYS.includes(k) || k === 'session_id' || k === 'updated_at') continue;
-    next[k] = fresh[k];
+  // Merge inside one locked read-modify-write: the base Σ was loaded before
+  // the LLM call, so a concurrent Stop hook may have updated bookkeeping
+  // keys (last_input_tokens, last_checkpoint_tokens, last_extraction_log
+  // bytes) during that window. Merging against a fresh read inside the lock
+  // is lost-update-safe without a post-hoc key re-copy.
+  const written = ss.mutateSigma(sessionId, (current) => {
+    const next = ss.mergeSigma(current, patch);
+    next.session_id = sessionId;
+    next.updated_at = new Date().toISOString();
+    return next;
+  });
+  if (written) {
+    ss.recordCheckpoint(written, event.cwd, event.trigger).catch(() => {});
+    // B4 pin release: mirror the sticky revocation into the kv-offload store
+    // so the focus-llama engine can release the first-user-message pin at its
+    // next eviction plan (GET /v1/kv-offload/session). Idempotent + sticky on
+    // the store side too; a write failure only delays the release by one
+    // extraction (fail-open, the pin stays).
+    if (written.anchor_revoked === true) {
+      const res = kv.setPinReleased(sessionId);
+      if (!res.ok) {
+        ss.appendTelemetry({
+          ts: Date.now(),
+          session_id: sessionId,
+          hook: 'precompact-extract-state',
+          event: 'pin_release_write_failed',
+          trigger: event.trigger,
+          reason: res.reason,
+        });
+      }
+    }
   }
-  next.session_id = sessionId;
-  next.updated_at = new Date().toISOString();
-  ss.saveSigma(sessionId, next);
-  ss.recordCheckpoint(next, event.cwd, event.trigger).catch(() => {});
   ss.appendTelemetry({ ts: Date.now(), session_id: sessionId, hook: 'precompact-extract-state', event: 'extracted', trigger: event.trigger, keys: Object.keys(patch) });
 }
 

@@ -107,8 +107,65 @@ function updateDoc(sessionId, mutate) {
   });
 }
 
+// ─── Evicted user-instruction ledger ────────────────────────────────────
+// kv_offload_evict keeps the FIRST user message pinned in the KV (task
+// anchor) and evicts the middle — which includes the user instructions that
+// define, change, or CANCEL the task. The model then re-derives "what am I
+// doing" from what remains: the pinned (possibly superseded) original
+// request + recent work, with the intervening instructions invisible.
+// 2026-09-28 incident: the evicted current-task definition + the pinned
+// cancelled request produced a restore loop right after an explicit user
+// cancellation ("복구하라고 한적이 없다").
+//
+// The ledger records the real user-instruction segments that left the KV so
+// a client hook can re-surface them as history data in the evict-protected
+// last-user region. Dumb + fail-open like the rest of this module: it
+// stores what it can parse; interpretation is the model's.
+
+const INSTR_CLIP = 300; // per-instruction clip (chars)
+const INSTR_MAX = 15;   // ledger cap (most recent kept)
+
+// First-line markers of user-role segments that are NOT real user
+// instructions: tool results and hook-generated correction prompts.
+const NOT_INSTRUCTION_RE = /^(?:<tool_response>|<tool_response>|\[FocusMemory ghost-file gate\])/;
+
 /**
- * Store (upsert) one segment's text for a session.
+ * Strip client-appended context blocks (user-prompt-submit context, system
+ * reminders) so the ledger keeps the user's own words.
+ * @param {string} s
+ * @returns {string}
+ */
+function stripInjectedBlocks(s) {
+  return s
+    .replace(/<qwen:user-prompt-submit-context>[\s\S]*?<\/qwen:user-prompt-submit-context>/g, '')
+    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+    .trim();
+}
+
+/**
+ * Extract the real user-instruction segments from an evicted chunk's raw
+ * text (chat-template role markers included). Tool results and hook
+ * corrections are excluded; results are clipped, most recent last.
+ * @param {string} text - the evicted segment's raw text
+ * @returns {string[]} clipped instruction strings
+ */
+function extractUserInstructions(text) {
+  const out = [];
+  const re = /<\|im_start\|>user\n([\s\S]*?)(?=<\|im_start\|>|$)/g;
+  for (const m of String(text).matchAll(re)) {
+    let body = m[1].replace(/\s*<\|im_end\|>\s*$/, '').trim();
+    if (!body) continue;
+    if (NOT_INSTRUCTION_RE.test(body.split('\n', 1)[0])) continue;
+    body = stripInjectedBlocks(body);
+    if (!body) continue;
+    out.push(body.length > INSTR_CLIP ? `${body.slice(0, INSTR_CLIP)}…` : body);
+  }
+  return out;
+}
+
+/**
+ * Store (upsert) one segment's text for a session, and record any real
+ * user-instruction segments it contains in the session's ledger.
  * @param {string} sessionId
  * @param {string} key - stable segment key (the engine's content hash)
  * @param {string} text - the segment's raw text (re-prefilled verbatim on GET)
@@ -120,6 +177,7 @@ function putChunk(sessionId, key, text, tokens) {
   if (typeof text !== 'string' || text.length === 0) return { ok: false, reason: 'empty text' };
   const k = String(key);
   if (!k) return { ok: false, reason: 'empty key' };
+  const instructions = extractUserInstructions(text);
   try {
     const doc = updateDoc(sessionId, (d) => {
       d.session_id = String(sessionId || '');
@@ -129,12 +187,94 @@ function putChunk(sessionId, key, text, tokens) {
         tokens: Number.isFinite(tokens) ? Number(tokens) : undefined,
         ts: new Date().toISOString(),
       };
+      if (instructions.length) {
+        if (!Array.isArray(d.instructions)) d.instructions = [];
+        for (const t of instructions) {
+          // Text-keyed dedup: a chunk is PUT idempotently, and the same
+          // instruction text must not accumulate duplicate ledger entries.
+          if (!d.instructions.some((e) => e.text === t)) {
+            d.instructions.push({ text: t, ts: new Date().toISOString() });
+          }
+        }
+        if (d.instructions.length > INSTR_MAX) d.instructions = d.instructions.slice(-INSTR_MAX);
+      }
       return d;
     });
     if (!doc) return { ok: false, reason: 'write skipped' };
     return { ok: true, bytes: Buffer.byteLength(text, 'utf8') };
   } catch (err) {
     return { ok: false, reason: err.message };
+  }
+}
+
+/**
+ * List a session's evicted user-instruction ledger (clipped text + ts,
+ * oldest first). Read-only and gate-less by design: it is called from
+ * qwen-spawned hook processes (no FocusMemory/.env in their environment),
+ * and the ledger only ever contains data the engine actually PUT — a
+ * missing/corrupt file simply yields [].
+ * @param {string} sessionId
+ * @returns {Array<{text: string, ts: string}>}
+ */
+function listInstructions(sessionId) {
+  try {
+    const doc = loadDoc(sessionId);
+    return Array.isArray(doc.instructions) ? doc.instructions : [];
+  } catch {
+    return [];
+  }
+}
+
+// ─── Pin-released flag (B4) ──────────────────────────────────────────────
+// The engine pins the FIRST user message in the KV (task anchor — 2026-09-26
+// fix), but a pinned CANCELLED request keeps steering the model after the
+// user revokes the task (2026-09-28 incident). When the state worker judges
+// the original task revoked (Σ.anchor_revoked, sticky), it mirrors the flag
+// here; the engine reads it at its next eviction plan and the first user
+// message becomes a normal evictable middle message (re-surfaced per turn by
+// the instruction ledger above).
+
+/**
+ * Mark a session's first-user-message pin as released (idempotent, sticky —
+ * once set it is never cleared; the session file is deleted at session end).
+ * Gate-less by design: it is called from qwen-spawned worker processes that
+ * have no FocusMemory/.env in their environment, and the flag is inert
+ * unless the engine's own FOCUSMEMORY_KVOFFLOAD gate is on (the engine
+ * simply never queries it).
+ * @param {string} sessionId
+ * @returns {{ok: boolean, reason?: string}}
+ */
+function setPinReleased(sessionId) {
+  let set = false;
+  try {
+    const doc = updateDoc(sessionId, (d) => {
+      if (d.pin_released === true) return null; // already released — no rewrite
+      d.pin_released = true;
+      d.pin_released_at = new Date().toISOString();
+      d.updated_at = d.pin_released_at;
+      set = true;
+      return d;
+    });
+    // null doc = the mutator skipped the write because the flag was already
+    // set (idempotent success); a doc = a fresh write.
+    if (set || doc === null) return { ok: true };
+    return { ok: false, reason: 'write skipped' };
+  } catch (err) {
+    return { ok: false, reason: err.message };
+  }
+}
+
+/**
+ * Read a session's pin-released flag (false when absent/corrupt — the
+ * engine's fail-open default keeps the pin).
+ * @param {string} sessionId
+ * @returns {boolean}
+ */
+function getPinReleased(sessionId) {
+  try {
+    return loadDoc(sessionId).pin_released === true;
+  } catch {
+    return false;
   }
 }
 
@@ -249,6 +389,10 @@ module.exports = {
   putChunk,
   getChunk,
   listChunks,
+  listInstructions,
+  extractUserInstructions,
+  setPinReleased,
+  getPinReleased,
   deleteChunk,
   deleteSession,
   sweepKv,

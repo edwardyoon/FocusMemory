@@ -2179,6 +2179,23 @@ httpApp.get("/v1/kv-offload/chunk", async (c) => {
   return c.json({ ok: true, session_id: sessionId, key, text: res.text, tokens: res.tokens, ts: res.ts });
 });
 
+// Session-level pin-released flag (B4): the engine queries it at each
+// eviction plan. Set by the FocusMemory state worker when the user has
+// revoked the session's original first task; while true the engine's
+// first-user-message pin is released and that message becomes a normal
+// evictable middle message. Absent/corrupt -> pin_released false (the
+// engine's fail-open default keeps the pin).
+httpApp.get("/v1/kv-offload/session", async (c) => {
+  const denied = kvAuth(c);
+  if (denied) return denied;
+  if (!kvOffload.kvOffloadEnabled()) return c.json({ error: "kv-offload disabled" }, 404);
+  const sessionId = c.req.query("session_id") || "";
+  if (!sessionId) return c.json({ error: "session_id required" }, 400);
+  const pinReleased = kvOffload.getPinReleased(sessionId);
+  log(`[kv-offload] SESSION session=${sessionId} pin_released=${pinReleased}`);
+  return c.json({ ok: true, session_id: sessionId, pin_released: pinReleased });
+});
+
 httpApp.delete("/v1/kv-offload/session", async (c) => {
   const denied = kvAuth(c);
   if (denied) return denied;
