@@ -17,6 +17,13 @@
 // anchoring) but the lossy native prose summary is the only "where are we"
 // source until the context regrows.
 //
+// 2026-10-02: the anchor is rendered from the PREVIOUS turn's Σ (one turn
+// behind by construction). An imperative "task:" label made the model
+// resume a completed/superseded task instead of answering the user's new
+// message (mid-investigation jump back to a finished re-apply task). The
+// anchor is now framed as a record, not a directive (renderAnchor
+// record:true + the preamble below).
+//
 // If the previous turn's extraction worker is still running, the anchor is
 // one turn stale — harmless: the live tail of the transcript contains
 // everything done since, and the next turn's anchor is fresh.
@@ -72,15 +79,21 @@ function main() {
   const parts = [];
 
   if (anchorQualified) {
-    const anchor = ss.renderAnchor(sigma);
+    // record: true — the anchor is one turn behind by construction; an
+    // imperative "task:" label made the model resume a completed/superseded
+    // task instead of answering the user's new message (2026-10-02 incident).
+    const anchor = ss.renderAnchor(sigma, { record: true });
     if (anchor) {
       parts.push(
-        `Session state anchor (FocusMemory Σ, as of the end of the previous turn — ` +
-        `may be stale; cross-check failing/pending items against current ground truth ` +
-        `before acting on them. The anchor is SUBORDINATE to the user's latest message: ` +
-        `if that message defines a different task, cancels, or supersedes the anchored ` +
-        `task, the user's message wins — do NOT resume or continue the anchored ` +
-        `task/step):\n${anchor}`
+        `Session state anchor — a RECORD of where the PREVIOUS turn ended (FocusMemory Σ, ` +
+        `as of the end of the previous turn; may be stale). It is NOT a task ` +
+        `assignment: the user's latest message (the one you are answering now) ` +
+        `defines the current task. If the user's message asks a question, starts ` +
+        `new work, or changes direction, do THAT — do NOT resume, continue, ` +
+        `re-verify, or re-apply the previous turn's task/step below, even though ` +
+        `it may read as an instruction. Use this record only to recall recent ` +
+        `state (files, tests, open items), and cross-check any item against ` +
+        `current ground truth before acting on it:\n${anchor}`
       );
     }
   }

@@ -260,18 +260,32 @@ function hasNewUserMessageSince(transcriptPath, fromBytes = 0) {
 }
 
 /**
- * Render a compact "where are we" anchor from Σ for per-turn injection
- * (UserPromptSubmit hook). One line, capped — the anchor must cost a
- * negligible fraction of the context it is meant to protect.
+ * Render a compact "where are we" anchor from Σ. One line, capped — the
+ * anchor must cost a negligible fraction of the context it is meant to
+ * protect.
  * @param {object} sigma
+ * @param {object} [opts]
+ * @param {boolean} [opts.record=false] - true: label task/step as a RECORD of
+ *   the previous turn, not the current task. Required by the per-turn
+ *   UserPromptSubmit anchor: that state is one turn behind by construction,
+ *   and the imperative "task:" label made the model resume a
+ *   completed/superseded task instead of answering the user's new message
+ *   (2026-10-02 incident: mid-investigation jump back to a finished
+ *   re-apply task). false (default): directive framing, for callers that
+ *   resume the work (stop-turn-guard).
  * @returns {string} compact anchor text (empty string when Σ has no content)
  */
-function renderAnchor(sigma) {
+function renderAnchor(sigma, opts = {}) {
   if (!sigma || typeof sigma !== 'object') return '';
+  const record = !!opts.record;
   const parts = [];
-  if (sigma.task_summary) parts.push(`task: ${sigma.task_summary}`);
+  if (sigma.task_summary) parts.push(record
+    ? `previous-turn task (record — NOT the current task): ${sigma.task_summary}`
+    : `task: ${sigma.task_summary}`);
   if (sigma.anchor_revoked === true) parts.push('original-task-anchor: REVOKED by user');
-  if (sigma.current_step) parts.push(`step: ${sigma.current_step}`);
+  if (sigma.current_step) parts.push(record
+    ? `previous-turn step (record — NOT a directive): ${sigma.current_step}`
+    : `step: ${sigma.current_step}`);
   if (Array.isArray(sigma.pending_checks) && sigma.pending_checks.length) {
     parts.push(`pending: ${sigma.pending_checks.slice(0, 5).join('; ')}`);
   }
@@ -507,7 +521,7 @@ ${transcriptText}
 - decisions must be self-contained: the session's chain-of-thought is NOT preserved after compaction, so a future reader must understand the why from the item alone. Record only SETTLED decisions — never transcribe the reasoning process, dead ends, or speculation.
 - tests_status is a CURRENT-status map: if the current state lists a check as "fail" or "pending" and the recent conversation shows it now passing, you MUST report "<check name>": "pass" to clear the stale entry. A check must never stay "fail" after its fix is verified in the conversation — stale fails poison the next session's anchor.
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
-- task_summary / current_step: give the current best value (omit if unchanged from current state).
+- task_summary / current_step: give the current best value. If the recent conversation shows the task CHANGED — a new user request, a pivot, or the previous task COMPLETED — you MUST output the updated task_summary / current_step: a finished or superseded task that lingers in Σ gets re-injected as the next turn's anchor and the model resumes it instead of the user's new message. Omit only when you are confident the task is unchanged; when in doubt, output the updated value.
 - anchor_revoked: set true ONLY when the user explicitly cancels, rejects, or supersedes the session's ORIGINAL first request in the recent conversation (e.g. "I never asked you to restore that — delete it again"). A follow-up, refinement, or new sub-task within the same task is NOT a revocation. It is sticky: if the current state is already true, keep it true. Omit it when unchanged.
 - Use only facts present in the conversation. No speculation.
 - Grounding (anti-confabulation): an assistant message can CLAIM work it never did — citing files that no [call]/[result] line in this segment touched, or pending items "carried over from a previous session" with no tool-call evidence. State is what the tool calls show, not what the prose asserts. Omit any pending_checks / files_touched / decisions item whose only support is such an unsupported claim.
