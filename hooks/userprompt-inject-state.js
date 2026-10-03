@@ -67,7 +67,59 @@ function main() {
   const sessionId = event.session_id;
   if (!sessionId) return;
 
-  const sigma = ss.loadSigma(sessionId);
+  let sigma = ss.loadSigma(sessionId);
+
+  // B4 pin release — rule-based, no LLM (2026-10-03): the existing release
+  // path only fires at Stop/PreCompact extraction, which is one turn late —
+  // the FIRST turn after a superseding user message ran with the stale pin.
+  // Release here, at the start of the turn, whenever the on-disk Σ already
+  // marks the original task revoked or complete. Idempotent/sticky in
+  // kv-offload; the engine reads pin_released at its next eviction plan.
+  if (sigma && (sigma.anchor_revoked === true || sigma.anchor_completed === true)) {
+    try {
+      if (!kv.getPinReleased(sessionId)) {
+        const res = kv.setPinReleased(sessionId);
+        ss.appendTelemetry({
+          ts: Date.now(),
+          session_id: sessionId,
+          hook: 'userprompt-inject-state',
+          event: res.ok ? 'pin_released' : 'pin_release_write_failed',
+          ...(res.ok ? {} : { reason: res.reason }),
+        });
+      }
+    } catch {
+      // fail-open — the turn proceeds even if the release write throws
+    }
+  }
+
+  // Σ current-view reset on post-completion context switch (2026-10-03):
+  // the extraction worker sets anchor_reset_pending when a sticky anchor
+  // flag flips to true (task completed / revoked). On THIS user message —
+  // the first one after the switch — wipe the current-view keys, which
+  // still describe the finished task; re-injected as the anchor they would
+  // re-latch the model onto the old work (stale-anchor failure mode). The
+  // flag is consumed in the same locked write, so the reset fires exactly
+  // once: the new task's re-populated keys (merge rule: replace) survive
+  // all later turns. Cumulative keys (files_touched / decisions /
+  // tests_status) and session bookkeeping are kept — historical facts the
+  // new task can still use. The sticky anchor flags are kept too: the
+  // pin-release logic above and the engine's eviction plan read them.
+  if (sigma && sigma.anchor_reset_pending === true) {
+    try {
+      const reset = ss.mutateSigma(sessionId, (cur) => {
+        if (!cur || cur.anchor_reset_pending !== true) return null; // re-check inside the lock
+        cur.anchor_reset_pending = false; // consume — exactly one reset per completion
+        delete cur.task_summary;
+        delete cur.current_step;
+        delete cur.pending_checks;
+        return cur;
+      });
+      if (reset) sigma = reset; // render the anchor below from the post-reset Σ
+    } catch {
+      // fail-open
+    }
+  }
+
   const tokens = Number(sigma.last_input_tokens) || 0;
   const compactCount = Number(sigma.compact_count) || 0;
   // Anchor gating: below the threshold, only the post-compaction window

@@ -87,6 +87,29 @@ const GREETING_SHAPE = [
   /is there anything i can (do|help)/i,
 ];
 
+// Task-unit completion reports (2026-10-03): the model reports a unit of work
+// as DONE and cites what was changed/verified. Such a report is a legitimate
+// stop — the guard must not force a "resume" of already-complete work (the
+// stale-anchor problem is compounded when the guard blocks a real completion
+// and the model re-enters finished work). A bare "no task" parking message
+// WITHOUT completion evidence still blocks (that is the bad-summary failure
+// mode). Both a completion claim (COMPLETION_SHAPE) AND concrete evidence
+// (COMPLETION_PROOF) are required to keep false positives minimal.
+const COMPLETION_SHAPE = [
+  /(작업|태스크|task)\s*(이|가)?\s*(완료|종료|마감|끝)/i,
+  /모든\s*(작업|태스크|task|항목)\s*(이|가)?\s*(완료|종료|마감)/i,
+  /(완료|종료|마감)\s*되었습니다/i,
+  /all\s+tasks?\s+(are\s+)?(complete|done|finished)/i,
+  /task\s+(is\s+)?(complete|done|finished)/i,
+  /work\s+(is\s+)?(complete|done|finished)/i,
+];
+const COMPLETION_PROOF = [
+  /(파일|코드|함수|스크립트|file|files?|code|function|script)/i,
+  /(테스트|test|tests?|스위트|suite|통과|pass|passed)/i,
+  /(검증|verify|verified|확인|실행|커밋|commit|node --check|php -l)/i,
+  /(수정|변경|추가|생성|작성|적용|반영|deploy|배포)/i,
+];
+
 /**
  * Short stable hash of a message (loop-detection key).
  * @param {string} s
@@ -193,6 +216,22 @@ function main() {
   const noTaskIdx = firstMatch(msg, NO_TASK_CLAIM);
   const failureShape = (shapeIdx !== -1 && noTaskIdx !== -1) || greetIdx !== -1;
   if (!failureShape) return; // not the failure shape — allow stop
+
+  // Task-unit completion report: a genuine "done" with concrete evidence is a
+  // legitimate stop — the guard must not force a "resume" of already-complete
+  // work (2026-10-03: the stale-anchor problem is compounded when the guard
+  // blocks a real completion and the model re-enters finished work). Requires
+  // BOTH a completion claim and evidence, so a bare "no task" parking message
+  // still falls through to the block logic below.
+  if (firstMatch(msg, COMPLETION_SHAPE) !== -1 && firstMatch(msg, COMPLETION_PROOF) !== -1) {
+    ss.appendTelemetry({
+      ts: Date.now(),
+      session_id: sessionId,
+      hook: 'stop-turn-guard',
+      decision: 'completion_allowed',
+    });
+    return;
+  }
 
   // C — active work anchor.
   const sigma = ss.loadSigma(sessionId);

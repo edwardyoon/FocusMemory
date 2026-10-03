@@ -36,6 +36,12 @@ const LLM_TIMEOUT_MS = 120000; // worker is detached — no hook timeout constra
 // Transcript window for extraction (rendered chars). Local 27B prefill is
 // ~0.5ms/char; 30k keeps the worker in the ~1min range.
 const BUDGET_CHARS = Math.max(2000, parseInt(process.env.FOCUSMEMORY_SKILLSTATE_MAX_CHARS || '30000', 10) || 30000);
+// User-message guarantee (a39ee3d9 fix): extend the tail past the budget, up
+// to this cap, until at least TAIL_MIN_USER user entries are present — a 30k
+// all-assistant tail held zero user messages, so anchor_completed could never
+// fire. Worst case stays in the ~1-2min range (3x budget).
+const TAIL_MAX_CHARS = Math.max(BUDGET_CHARS, parseInt(process.env.FOCUSMEMORY_SKILLSTATE_TAIL_MAX_CHARS || String(BUDGET_CHARS * 3), 10) || BUDGET_CHARS * 3);
+const TAIL_MIN_USER = Math.max(1, parseInt(process.env.FOCUSMEMORY_SKILLSTATE_TAIL_MIN_USER || '2', 10) || 2);
 
 /**
  * Worker mode — the actual extraction (runs detached, no hook timeout).
@@ -46,7 +52,7 @@ async function runWorker(event) {
   const sessionId = event.session_id;
   if (!sessionId) return;
 
-  const transcriptText = ss.extractTranscriptTail(event.transcript_path, BUDGET_CHARS);
+  const transcriptText = ss.extractTranscriptTail(event.transcript_path, BUDGET_CHARS, { maxChars: TAIL_MAX_CHARS, minUserEntries: TAIL_MIN_USER });
   if (!transcriptText) return; // recording disabled or unreadable — nothing to extract
 
   // Stale-worker guard: the transcript only grows after a Stop when the user
@@ -102,6 +108,17 @@ async function runWorker(event) {
     const next = ss.mergeSigma(current, patch);
     next.session_id = sessionId;
     next.updated_at = new Date().toISOString();
+    // One-shot context-switch marker (2026-10-03): the first extraction
+    // that flips a sticky anchor flag from unset to true marks the
+    // current-view keys (task_summary / current_step / pending_checks) as
+    // the finished task's. The UserPromptSubmit hook consumes the marker
+    // on the NEXT user message — exactly one Σ reset per completion, so
+    // the new task's re-populated keys (merge rule: replace) survive all
+    // later turns. The sticky flags themselves never re-transition, which
+    // is what makes the marker a reliable one-shot without a turn counter.
+    const wasDone = current.anchor_revoked === true || current.anchor_completed === true;
+    const isDone = next.anchor_revoked === true || next.anchor_completed === true;
+    if (isDone && !wasDone) next.anchor_reset_pending = true;
     return next;
   });
   if (written) {

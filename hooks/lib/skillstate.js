@@ -283,7 +283,7 @@ function renderAnchor(sigma, opts = {}) {
     ? `previous-turn task (record — NOT the current task): ${sigma.task_summary}`
     : `task: ${sigma.task_summary}`);
   if (sigma.anchor_revoked === true) parts.push('original-task-anchor: REVOKED by user');
-  if (sigma.anchor_completed === true) parts.push('original-task-anchor: COMPLETED (superseded by a newer task)');
+  if (sigma.anchor_completed === true) parts.push('original-task-anchor: COMPLETED');
   if (sigma.current_step) parts.push(record
     ? `previous-turn step (record — NOT a directive): ${sigma.current_step}`
     : `step: ${sigma.current_step}`);
@@ -317,8 +317,10 @@ const KEY_RULES = {
   // an LLM "false" (or omission) can leave the flag alone, never clear it.
   anchor_revoked: 'sticky_true',
   // B4 extension (2026-10-03): the completion release is one-way too — once
-  // the original task is done AND superseded by a newer user request, a
-  // later LLM "false"/omission must not re-pin the stale anchor.
+  // the original task is fully done, a later LLM "false"/omission must not
+  // re-pin the stale anchor. The pin releases on completion (not only on
+  // supersede), so the first turn after the task ends does not run under a
+  // stale anchor (incident a39ee3d9).
   anchor_completed: 'sticky_true',
 };
 const MAX_LIST_ITEMS = 50; // cap cumulative lists so Σ stays injection-sized
@@ -452,11 +454,23 @@ function entryToText(entry) {
  * post-compaction turn needs; earlier state is already accumulated in Σ.
  * The budget is measured on RENDERED (post-clip) length, so one giant
  * tool_result line costs its clipped size (~800 chars), not its raw size.
+ *
+ * User-message guarantee (2026-10-03, incident a39ee3d9): the walk extends
+ * past budgetChars (up to opts.maxChars) until at least opts.minUserEntries
+ * user entries are in the window. Without this, a long all-assistant tail
+ * (one big tool-heavy turn) pushes every user message beyond the budget —
+ * the a39ee3d9 supersede sat 39,752 rendered chars back against a 30,000
+ * budget — so the extractor never sees the task transition and
+ * anchor_completed / anchor_revoked can never fire; the stale
+ * first-user-message pin keeps steering the model.
  * @param {string} transcriptPath
  * @param {number} [budgetChars=30000]
+ * @param {object} [opts]
+ * @param {number} [opts.maxChars] hard cap on the extended window (default 3× budget)
+ * @param {number} [opts.minUserEntries] user entries the window must contain (default 2)
  * @returns {string} compact text (empty string when nothing usable)
  */
-function extractTranscriptTail(transcriptPath, budgetChars = 30000) {
+function extractTranscriptTail(transcriptPath, budgetChars = 30000, opts = {}) {
   if (!transcriptPath) return '';
   let raw;
   try {
@@ -465,16 +479,26 @@ function extractTranscriptTail(transcriptPath, budgetChars = 30000) {
     return '';
   }
   const lines = raw.split('\n').filter(Boolean);
+  const maxChars = Math.max(budgetChars, opts.maxChars || budgetChars * 3);
+  const minUserEntries = Math.max(1, opts.minUserEntries || 2);
   const rendered = [];
   let used = 0;
-  for (let i = lines.length - 1; i >= 0 && used < budgetChars; i--) {
+  let userEntries = 0;
+  for (let i = lines.length - 1; i >= 0 && used < maxChars; i--) {
     let text = null;
+    let isUser = false;
     try {
-      text = entryToText(JSON.parse(lines[i]));
+      const entry = JSON.parse(lines[i]);
+      text = entryToText(entry);
+      isUser = entry.type === 'user';
     } catch {}
     if (!text) continue;
     rendered.unshift(text);
     used += text.length + 1;
+    if (isUser) userEntries++;
+    // Stop early only once BOTH the budget and the user-message guarantee
+    // hold; otherwise keep walking back (bounded by maxChars).
+    if (used >= budgetChars && userEntries >= minUserEntries) break;
   }
   return rendered.join('\n');
 }
@@ -529,7 +553,7 @@ ${transcriptText}
 - pending_checks is a snapshot: list only what is still outstanding (omit the key if nothing is pending).
 - task_summary / current_step: give the current best value. If the recent conversation shows the task CHANGED — a new user request, a pivot, or the previous task COMPLETED — you MUST output the updated task_summary / current_step: a finished or superseded task that lingers in Σ gets re-injected as the next turn's anchor and the model resumes it instead of the user's new message. Omit only when you are confident the task is unchanged; when in doubt, output the updated value.
 - anchor_revoked: set true ONLY when the user explicitly cancels, rejects, or supersedes the session's ORIGINAL first request in the recent conversation (e.g. "I never asked you to restore that — delete it again"). A follow-up, refinement, or new sub-task within the same task is NOT a revocation. It is sticky: if the current state is already true, keep it true. Omit it when unchanged.
-- anchor_completed: set true ONLY when the recent conversation shows the session's ORIGINAL first request is FULLY COMPLETED (the work the user originally asked for is done) AND a later user message in the same conversation starts a NEW, different task that supersedes it. A follow-up, refinement, or fix request on the completed task is NOT anchor_completed (the original request stays pinned while the user iterates on it). If the task is complete but the user has not yet sent a new request, do NOT set it. It is sticky: if the current state is already true, keep it true. Omit it when unchanged.
+- anchor_completed: set true when the recent conversation shows the session's ORIGINAL first request is FULLY COMPLETED — the work the user originally asked for is done (the deliverable exists, the tests pass, or the user has visibly moved on). It does NOT require a new task to have started: once the original work is done, the first-user-message pin has served its purpose and is released. A task that is only PARTIALLY done or still being actively worked on is NOT anchor_completed. It is sticky: if the current state is already true, keep it true. Omit it when unchanged.
 - Use only facts present in the conversation. No speculation.
 - Grounding (anti-confabulation): an assistant message can CLAIM work it never did — citing files that no [call]/[result] line in this segment touched, or pending items "carried over from a previous session" with no tool-call evidence. State is what the tool calls show, not what the prose asserts. Omit any pending_checks / files_touched / decisions item whose only support is such an unsupported claim.
 - Output JSON only. No markdown fences, no commentary.`;
