@@ -106,12 +106,16 @@ async function runWorker(event) {
   });
   if (written) {
     ss.recordCheckpoint(written, event.cwd, event.trigger).catch(() => {});
-    // B4 pin release: mirror the sticky revocation into the kv-offload store
-    // so the focus-llama engine can release the first-user-message pin at its
-    // next eviction plan (GET /v1/kv-offload/session). Idempotent + sticky on
-    // the store side too; a write failure only delays the release by one
-    // extraction (fail-open, the pin stays).
-    if (written.anchor_revoked === true) {
+    // B4 pin release: mirror the sticky release flags into the kv-offload
+    // store so the focus-llama engine can release the first-user-message pin
+    // at its next eviction plan (GET /v1/kv-offload/session). Two triggers:
+    // anchor_revoked (user cancelled/superseded the original request) and
+    // anchor_completed (original task finished AND a newer user request
+    // superseded it — 2026-10-03 extension; without it the stale pinned
+    // request re-latches the model after its completion evidence is evicted,
+    // incident cde14958). Idempotent + sticky on the store side too; a write
+    // failure only delays the release by one extraction (fail-open, pin stays).
+    if (written.anchor_revoked === true || written.anchor_completed === true) {
       const res = kv.setPinReleased(sessionId);
       if (!res.ok) {
         ss.appendTelemetry({

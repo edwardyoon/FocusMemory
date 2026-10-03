@@ -227,12 +227,15 @@ function listInstructions(sessionId) {
 
 // ─── Pin-released flag (B4) ──────────────────────────────────────────────
 // The engine pins the FIRST user message in the KV (task anchor — 2026-09-26
-// fix), but a pinned CANCELLED request keeps steering the model after the
-// user revokes the task (2026-09-28 incident). When the state worker judges
-// the original task revoked (Σ.anchor_revoked, sticky), it mirrors the flag
-// here; the engine reads it at its next eviction plan and the first user
-// message becomes a normal evictable middle message (re-surfaced per turn by
-// the instruction ledger above).
+// fix), but a pinned STALE request keeps steering the model after the task
+// is over (2026-09-28 incident: user revoked the task; 2026-10-02 incident
+// cde14958: task completed and superseded by a newer request — the pinned
+// original re-latched the model after its completion evidence was evicted).
+// When the state worker judges the original task revoked (Σ.anchor_revoked)
+// OR completed-and-superseded (Σ.anchor_completed) — both sticky — it
+// mirrors the flag here; the engine reads it at its next eviction plan and
+// the first user message becomes a normal evictable middle message
+// (re-surfaced per turn by the instruction ledger above).
 
 /**
  * Mark a session's first-user-message pin as released (idempotent, sticky —
